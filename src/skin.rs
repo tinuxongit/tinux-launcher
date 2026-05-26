@@ -20,14 +20,6 @@ pub enum SkinView {
 }
 
 impl SkinView {
-    pub fn label(self) -> &'static str {
-        match self {
-            SkinView::Front => "Front",
-            SkinView::Right => "Right",
-            SkinView::Back => "Back",
-            SkinView::Left => "Left",
-        }
-    }
     pub fn next(self) -> Self {
         match self {
             SkinView::Front => SkinView::Right,

@@ -1,14 +1,8 @@
+use crate::event::WorkerMsg;
 use anyhow::{anyhow, bail, Context, Result};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use url::Url;
+use tokio::sync::mpsc::UnboundedSender;
 
-const BIND_HOST: &str = "127.0.0.1";
-const BIND_HOST_V6: &str = "::1";
-const REDIRECT_HOST: &str = "localhost";
 const AUTH_BASE: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
 const XBOX_AUTH: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_AUTH: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
@@ -17,6 +11,7 @@ const MC_PROFILE: &str = "https://api.minecraftservices.com/minecraft/profile";
 const SCOPES: &str = "XboxLive.signin offline_access";
 const KEYRING_SERVICE: &str = "TinuxLauncher";
 const KEYRING_USER: &str = "ms-refresh";
+const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Account {
@@ -27,7 +22,16 @@ pub struct Account {
     pub refresh_token: Option<String>,
 }
 
-const BAKED_CLIENT_ID: Option<&str> = Some("164bca05-6a7e-4142-990e-540a7aae3f18");
+#[derive(Debug, Clone)]
+pub struct DeviceCodePrompt {
+    pub user_code: String,
+    pub verification_uri: String,
+    pub expires_in: u64,
+}
+
+// Our Azure client ID, registered to tinuxongit and approved for
+// Minecraft/Xbox authentication (see https://aka.ms/AppRegInfo).
+const BAKED_CLIENT_ID: Option<&str> = Some("164bca05-6a7e-4142-990e-540a7aae3f18"); // tinux-launcher
 
 pub fn client_id() -> Option<String> {
     if let Ok(v) = std::env::var("TINUX_MS_CLIENT_ID") {
@@ -44,38 +48,29 @@ pub fn client_id() -> Option<String> {
     BAKED_CLIENT_ID.map(|s| s.to_string())
 }
 
-pub async fn interactive_login() -> Result<Account> {
+/// Run the OAuth 2.0 Device Code Flow against Microsoft's consumer endpoint.
+///
+/// Emits a `WorkerMsg::AuthDeviceCode` containing the user_code + verification
+/// URI as soon as Microsoft hands them to us, then polls /token until the
+/// user completes the sign-in (or the code expires / they cancel).
+pub async fn interactive_login(tx: UnboundedSender<WorkerMsg>) -> Result<Account> {
     let client_id = client_id().ok_or_else(|| anyhow!("no client id configured"))?;
-
-    let listeners = CallbackListeners::bind().await?;
-    let port = listeners.port;
-    let redirect_uri = format!("http://{REDIRECT_HOST}:{port}/callback");
-
-    let (verifier, challenge) = pkce_pair();
-    let state = random_state();
-
-    let mut auth_url = Url::parse(&format!("{AUTH_BASE}/authorize"))?;
-    auth_url
-        .query_pairs_mut()
-        .append_pair("client_id", &client_id)
-        .append_pair("response_type", "code")
-        .append_pair("redirect_uri", &redirect_uri)
-        .append_pair("response_mode", "query")
-        .append_pair("scope", SCOPES)
-        .append_pair("state", &state)
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("prompt", "select_account");
-
-    webbrowser::open(auth_url.as_str()).context("opening browser for sign-in")?;
-
-    let code = wait_for_redirect(listeners, &state).await?;
-
     let http = reqwest::Client::builder()
         .user_agent("tinux-launcher/0.1")
         .build()?;
 
-    let ms = exchange_code(&http, &client_id, &code, &redirect_uri, &verifier).await?;
+    let device = request_device_code(&http, &client_id).await?;
+
+    // Tell the UI to show the user code + open the verification URL in a browser.
+    let _ = tx.send(WorkerMsg::AuthDeviceCode {
+        user_code: device.user_code.clone(),
+        verification_uri: device.verification_uri.clone(),
+        expires_in: device.expires_in,
+    });
+    // Best-effort: also pop the browser so the user doesn't have to copy the URL.
+    let _ = webbrowser::open(&device.verification_uri);
+
+    let ms = poll_for_token(&http, &client_id, &device).await?;
     let account = ms_to_account(&http, &ms).await?;
 
     if let Some(rt) = &account.refresh_token {
@@ -106,6 +101,36 @@ pub async fn set_skin_url(
     Ok(())
 }
 
+/// Upload a local PNG file as the active Minecraft skin via Mojang's
+/// multipart endpoint.
+pub async fn upload_skin_file(
+    http: &reqwest::Client,
+    token: &str,
+    model: &str,
+    file_bytes: Vec<u8>,
+    filename: &str,
+) -> Result<()> {
+    let part = reqwest::multipart::Part::bytes(file_bytes)
+        .file_name(filename.to_string())
+        .mime_str("image/png")
+        .context("setting mime for skin upload")?;
+    let form = reqwest::multipart::Form::new()
+        .text("variant", model.to_string())
+        .part("file", part);
+    let resp = http
+        .post("https://api.minecraftservices.com/minecraft/profile/skins")
+        .bearer_auth(token)
+        .multipart(form)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let s = resp.status();
+        let t = resp.text().await.unwrap_or_default();
+        bail!("upload skin HTTP {s}: {t}");
+    }
+    Ok(())
+}
+
 pub async fn reset_skin(http: &reqwest::Client, token: &str) -> Result<()> {
     let resp = http
         .delete("https://api.minecraftservices.com/minecraft/profile/skins/active")
@@ -126,165 +151,75 @@ pub fn logout() {
     }
 }
 
-fn pkce_pair() -> (String, String) {
-    let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    let verifier = URL_SAFE_NO_PAD.encode(bytes);
-    let digest = sha2_impl::sha256(verifier.as_bytes());
-    let challenge = URL_SAFE_NO_PAD.encode(digest);
-    (verifier, challenge)
-}
-
-mod sha2_impl {
-    const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-        0xc67178f2,
-    ];
-    const H0: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-
-    pub fn sha256(msg: &[u8]) -> [u8; 32] {
-        let bit_len = (msg.len() as u64) * 8;
-        let mut padded = msg.to_vec();
-        padded.push(0x80);
-        while padded.len() % 64 != 56 {
-            padded.push(0);
-        }
-        padded.extend_from_slice(&bit_len.to_be_bytes());
-
-        let mut h = H0;
-        for chunk in padded.chunks(64) {
-            let mut w = [0u32; 64];
-            for i in 0..16 {
-                w[i] = u32::from_be_bytes([
-                    chunk[i * 4],
-                    chunk[i * 4 + 1],
-                    chunk[i * 4 + 2],
-                    chunk[i * 4 + 3],
-                ]);
-            }
-            for i in 16..64 {
-                let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-                let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-                w[i] = w[i - 16]
-                    .wrapping_add(s0)
-                    .wrapping_add(w[i - 7])
-                    .wrapping_add(s1);
-            }
-            let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
-                (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
-            for i in 0..64 {
-                let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-                let ch = (e & f) ^ (!e & g);
-                let t1 = hh
-                    .wrapping_add(s1)
-                    .wrapping_add(ch)
-                    .wrapping_add(K[i])
-                    .wrapping_add(w[i]);
-                let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-                let maj = (a & b) ^ (a & c) ^ (b & c);
-                let t2 = s0.wrapping_add(maj);
-                hh = g;
-                g = f;
-                f = e;
-                e = d.wrapping_add(t1);
-                d = c;
-                c = b;
-                b = a;
-                a = t1.wrapping_add(t2);
-            }
-            h[0] = h[0].wrapping_add(a);
-            h[1] = h[1].wrapping_add(b);
-            h[2] = h[2].wrapping_add(c);
-            h[3] = h[3].wrapping_add(d);
-            h[4] = h[4].wrapping_add(e);
-            h[5] = h[5].wrapping_add(f);
-            h[6] = h[6].wrapping_add(g);
-            h[7] = h[7].wrapping_add(hh);
-        }
-        let mut out = [0u8; 32];
-        for (i, w) in h.iter().enumerate() {
-            out[i * 4..i * 4 + 4].copy_from_slice(&w.to_be_bytes());
-        }
-        out
+/// Try to silently restore a previously-signed-in session by trading the
+/// refresh token in the keyring for a fresh access token, then re-running
+/// the Xbox + Mojang chain. Returns Ok(account) on success, Err otherwise
+/// (no saved token, token expired, network failure, etc.). Callers should
+/// just discard the error and leave the user in offline mode.
+pub async fn try_refresh_session() -> Result<Account> {
+    let client_id = client_id().ok_or_else(|| anyhow!("no client id configured"))?;
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+        .context("opening keyring entry")?;
+    let refresh_token = entry.get_password().context("no saved session")?;
+    if refresh_token.trim().is_empty() {
+        bail!("saved refresh token is empty");
     }
-}
 
-fn random_state() -> String {
-    let mut bytes = [0u8; 16];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
-struct CallbackListeners {
-    port: u16,
-    ipv4: TcpListener,
-    ipv6: Option<TcpListener>,
-}
-
-impl CallbackListeners {
-    async fn bind() -> Result<Self> {
-        let ipv4 = TcpListener::bind((BIND_HOST, 0u16)).await?;
-        let port = ipv4.local_addr()?.port();
-        let ipv6 = TcpListener::bind((BIND_HOST_V6, port)).await.ok();
-        Ok(Self { port, ipv4, ipv6 })
+    let http = reqwest::Client::builder()
+        .user_agent("tinux-launcher/0.1")
+        .build()?;
+    let resp = http
+        .post(format!("{AUTH_BASE}/token"))
+        .form(&[
+            ("client_id", client_id.as_str()),
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token.as_str()),
+            ("scope", SCOPES),
+        ])
+        .send()
+        .await
+        .context("refreshing MS token")?;
+    if !resp.status().is_success() {
+        // Token is dead — drop it so we don't keep trying every startup.
+        let _ = entry.delete_credential();
+        let s = resp.status();
+        let t = resp.text().await.unwrap_or_default();
+        bail!("refresh failed HTTP {s}: {t}");
     }
-}
-
-async fn wait_for_redirect(listeners: CallbackListeners, expected_state: &str) -> Result<String> {
-    if let Some(ipv6) = listeners.ipv6 {
-        tokio::select! {
-            res = accept_redirect(listeners.ipv4, expected_state) => res,
-            res = accept_redirect(ipv6, expected_state) => res,
-        }
-    } else {
-        accept_redirect(listeners.ipv4, expected_state).await
+    let ms: MsToken = resp.json().await?;
+    let account = ms_to_account(&http, &ms).await?;
+    // Microsoft rotates refresh tokens, so persist the new one if we got it.
+    if let Some(rt) = &account.refresh_token {
+        let _ = entry.set_password(rt);
     }
+    Ok(account)
 }
 
-async fn accept_redirect(listener: TcpListener, expected_state: &str) -> Result<String> {
-    let (mut stream, _peer) = listener.accept().await?;
-    read_redirect(&mut stream, expected_state).await
+#[derive(Debug, Deserialize)]
+struct DeviceCodeResponse {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    expires_in: u64,
+    interval: u64,
 }
 
-async fn read_redirect(stream: &mut TcpStream, expected_state: &str) -> Result<String> {
-    let mut buf = vec![0u8; 4096];
-    let n = stream.read(&mut buf).await?;
-    let req = String::from_utf8_lossy(&buf[..n]);
-    let first_line = req.lines().next().unwrap_or("");
-    let path = first_line.split_whitespace().nth(1).unwrap_or("/");
-    let full = format!("http://{REDIRECT_HOST}{path}");
-    let parsed = Url::parse(&full)?;
-    let pairs: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
-
-    let body = if let Some(err) = pairs.get("error") {
-        format!("Sign-in failed: {err}")
-    } else {
-        "Sign-in complete. You can close this tab.".to_string()
-    };
-    let resp = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    let _ = stream.write_all(resp.as_bytes()).await;
-    let _ = stream.shutdown().await;
-
-    let state = pairs.get("state").map(|s| s.as_str()).unwrap_or("");
-    if state != expected_state {
-        bail!("OAuth state mismatch");
+async fn request_device_code(
+    http: &reqwest::Client,
+    client_id: &str,
+) -> Result<DeviceCodeResponse> {
+    let resp = http
+        .post(format!("{AUTH_BASE}/devicecode"))
+        .form(&[("client_id", client_id), ("scope", SCOPES)])
+        .send()
+        .await
+        .context("requesting device code")?;
+    if !resp.status().is_success() {
+        let s = resp.status();
+        let t = resp.text().await.unwrap_or_default();
+        bail!("device code request HTTP {s}: {t}");
     }
-    let code = pairs.get("code").ok_or_else(|| anyhow!("no code in callback"))?;
-    Ok(code.clone())
+    Ok(resp.json::<DeviceCodeResponse>().await?)
 }
 
 #[derive(Deserialize)]
@@ -294,30 +229,57 @@ struct MsToken {
     refresh_token: Option<String>,
 }
 
-async fn exchange_code(
+#[derive(Deserialize)]
+struct TokenError {
+    error: String,
+    #[serde(default)]
+    error_description: String,
+}
+
+async fn poll_for_token(
     http: &reqwest::Client,
     client_id: &str,
-    code: &str,
-    redirect_uri: &str,
-    verifier: &str,
+    device: &DeviceCodeResponse,
 ) -> Result<MsToken> {
-    let res = http
-        .post(format!("{AUTH_BASE}/token"))
-        .form(&[
-            ("client_id", client_id),
-            ("scope", SCOPES),
-            ("code", code),
-            ("redirect_uri", redirect_uri),
-            ("grant_type", "authorization_code"),
-            ("code_verifier", verifier),
-        ])
-        .send()
-        .await?
-        .error_for_status()
-        .context("exchanging OAuth code")?
-        .json::<MsToken>()
-        .await?;
-    Ok(res)
+    let started = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(device.expires_in.min(900));
+    let mut interval = std::time::Duration::from_secs(device.interval.max(1));
+    loop {
+        if started.elapsed() >= timeout {
+            bail!("Sign-in timed out — you didn't finish in time");
+        }
+        tokio::time::sleep(interval).await;
+
+        let resp = http
+            .post(format!("{AUTH_BASE}/token"))
+            .form(&[
+                ("client_id", client_id),
+                ("grant_type", DEVICE_GRANT),
+                ("device_code", device.device_code.as_str()),
+            ])
+            .send()
+            .await
+            .context("polling /token")?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp.json::<MsToken>().await?);
+        }
+        // 400 / 401 with a JSON error body is the normal "not yet" path.
+        let body_text = resp.text().await.unwrap_or_default();
+        match serde_json::from_str::<TokenError>(&body_text) {
+            Ok(err) => match err.error.as_str() {
+                "authorization_pending" => continue,
+                "slow_down" => {
+                    interval += std::time::Duration::from_secs(5);
+                    continue;
+                }
+                "expired_token" => bail!("Sign-in code expired — try again"),
+                "access_denied" => bail!("Sign-in was cancelled"),
+                other => bail!("Sign-in failed ({other}): {}", err.error_description),
+            },
+            Err(_) => bail!("Sign-in failed ({status}): {body_text}"),
+        }
+    }
 }
 
 async fn ms_to_account(http: &reqwest::Client, ms: &MsToken) -> Result<Account> {

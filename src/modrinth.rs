@@ -319,6 +319,20 @@ async fn install_one(
         .or_else(|| chosen.files.first())
         .ok_or_else(|| anyhow!("Modrinth version has no files"))?;
 
+    // Reject any filename that would let a malicious Modrinth project write
+    // outside the target directory. Modrinth files are normally plain basenames,
+    // but never trust an external system's filename verbatim.
+    if file.filename.contains('/')
+        || file.filename.contains('\\')
+        || file.filename.contains("..")
+        || file.filename.is_empty()
+    {
+        anyhow::bail!(
+            "Modrinth returned an unsafe filename '{}'; refusing to install",
+            file.filename
+        );
+    }
+
     fs::create_dir_all(mods_dir).await?;
     let dest = mods_dir.join(&file.filename);
 

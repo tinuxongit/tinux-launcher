@@ -1,6 +1,6 @@
 [package]
 name = "tinux-launcher"
-version = "0.1.19"
+version = "0.1.20"
 edition = "2021"
 description = "Terminal Minecraft Java launcher"
 
@@ -9,7 +9,7 @@ ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "multipart"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"

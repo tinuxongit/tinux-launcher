@@ -53,6 +53,10 @@ async fn main() -> Result<()> {
     app::spawn_fabric_meta_fetch(app.client.clone(), worker_tx.clone());
     app::spawn_modrinth_categories_fetch(app.client.clone(), worker_tx.clone());
     update::spawn_check(app.client.clone(), worker_tx.clone());
+    // Try to restore a previous Microsoft sign-in in the background — the
+    // refresh token in the OS keyring lets us skip the device-code flow
+    // entirely when it's still valid.
+    app::spawn_session_restore(worker_tx.clone());
     // If the user has previously set an offline skin URL/username, render its
     // preview right away so the Profile tab isn't empty.
     app::spawn_offline_skin_preview(
@@ -311,6 +315,11 @@ fn handle_key(app: &mut App, k: KeyEvent) {
         // info_popup > update_modal > filters_popup > mod_browser > article > tab default.
         KeyCode::Esc if app.info_popup.is_some() => {
             app.info_popup = None;
+        }
+        KeyCode::Esc if app.auth_device_code.is_some() => {
+            app.auth_device_code = None;
+            app.auth_in_progress = false;
+            app.status_message = "Sign-in cancelled".into();
         }
         KeyCode::Esc if update_modal_visible(app) => {
             app.update_modal_dismissed = true;
@@ -705,6 +714,19 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         Hit::LaunchButton => trigger_launch(app),
         Hit::InstallButton => trigger_install(app),
         Hit::LoginButton => trigger_login(app),
+        Hit::ReopenAuthUrl => {
+            if let Some(p) = &app.auth_device_code {
+                let _ = webbrowser::open(&p.verification_uri);
+            }
+        }
+        Hit::CancelAuth => {
+            // We can't actually cancel the in-flight tokio task cleanly, but
+            // we can mark the auth as failed in the UI and ignore any later
+            // AuthSucceeded that races in.
+            app.auth_device_code = None;
+            app.auth_in_progress = false;
+            app.status_message = "Sign-in cancelled".into();
+        }
         Hit::LogoutButton => {
             auth::logout();
             app.account = None;
@@ -781,13 +803,14 @@ fn trigger_login(app: &mut App) {
     }
     let tx = app.worker_tx.clone();
     let _ = tx.send(event::WorkerMsg::AuthStarted);
+    let tx_for_task = tx.clone();
     tokio::spawn(async move {
-        match auth::interactive_login().await {
+        match auth::interactive_login(tx_for_task.clone()).await {
             Ok(a) => {
-                let _ = tx.send(event::WorkerMsg::AuthSucceeded(a));
+                let _ = tx_for_task.send(event::WorkerMsg::AuthSucceeded(a));
             }
             Err(e) => {
-                let _ = tx.send(event::WorkerMsg::AuthFailed(format!("{e:#}")));
+                let _ = tx_for_task.send(event::WorkerMsg::AuthFailed(format!("{e:#}")));
             }
         }
     });
@@ -1140,6 +1163,56 @@ fn trigger_apply_skin(app: &mut App) {
     let model = app.skin_model.as_str().to_string();
 
     tokio::spawn(async move {
+        // Path-or-URL detection: if the user typed a local file path that
+        // exists on disk and ends in .png, treat it as a file upload (uses
+        // Mojang's multipart endpoint). Otherwise resolve as URL or username.
+        let local_path = std::path::PathBuf::from(&input);
+        let is_local_png = local_path.is_file()
+            && input.to_lowercase().ends_with(".png");
+
+        if is_local_png && !offline {
+            let (token, uuid) = match (token, uuid) {
+                (Some(t), Some(u)) => (t, u),
+                _ => {
+                    let _ = tx.send(event::WorkerMsg::SkinFailed("Sign in first".into()));
+                    return;
+                }
+            };
+            let bytes = match tokio::fs::read(&local_path).await {
+                Ok(b) => b,
+                Err(e) => {
+                    let _ = tx.send(event::WorkerMsg::SkinFailed(format!(
+                        "Couldn't read {}: {e}",
+                        local_path.display()
+                    )));
+                    return;
+                }
+            };
+            // Reject oversized files early. Vanilla Minecraft skins are 64x64
+            // or 64x32 RGBA PNGs — well under 32 KB. 256 KB is a generous cap.
+            if bytes.len() > 256 * 1024 {
+                let _ = tx.send(event::WorkerMsg::SkinFailed(
+                    "PNG is suspiciously large (over 256 KB) — pick a real skin file".into(),
+                ));
+                return;
+            }
+            let filename = local_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("skin.png")
+                .to_string();
+            match auth::upload_skin_file(&client, &token, &model, bytes, &filename).await {
+                Ok(()) => {
+                    let _ = tx.send(event::WorkerMsg::SkinApplied);
+                    app::spawn_skin_preview(client, tx, uuid);
+                }
+                Err(e) => {
+                    let _ = tx.send(event::WorkerMsg::SkinFailed(format!("{e:#}")));
+                }
+            }
+            return;
+        }
+
         let url = match skin::resolve_skin_url(&client, &input).await {
             Ok(u) => u,
             Err(e) => {

@@ -17,6 +17,8 @@ pub enum Hit {
     Tab(Tab),
     LoginButton,
     LogoutButton,
+    ReopenAuthUrl,
+    CancelAuth,
     LaunchButton,
     InstallButton,
     VersionRow(usize),
@@ -113,6 +115,11 @@ pub enum WorkerMsg {
     ManifestLoaded(Arc<VersionManifest>),
     ManifestFailed(String),
     AuthStarted,
+    AuthDeviceCode {
+        user_code: String,
+        verification_uri: String,
+        expires_in: u64,
+    },
     AuthSucceeded(Account),
     AuthFailed(String),
     InstallProgress {

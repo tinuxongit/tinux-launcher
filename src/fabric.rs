@@ -61,9 +61,11 @@ pub async fn fetch_supported_mc_versions(client: &reqwest::Client) -> Result<Vec
     #[derive(Deserialize)]
     struct GameVersion {
         version: String,
-        #[serde(default)]
-        stable: bool,
     }
+    // Return EVERY version Fabric publishes an intermediary for — stable +
+    // snapshots + pre-releases. The Versions tab then re-filters by kind via
+    // the Snapshots/Older toggles. Returning only stable here meant turning
+    // Snapshots on in the Modded tab silently produced an empty list.
     let url = format!("{META_BASE}/versions/game");
     let entries: Vec<GameVersion> = client
         .get(&url)
@@ -74,7 +76,7 @@ pub async fn fetch_supported_mc_versions(client: &reqwest::Client) -> Result<Vec
         .json()
         .await
         .context("parsing Fabric game versions")?;
-    Ok(entries.into_iter().filter(|g| g.stable).map(|g| g.version).collect())
+    Ok(entries.into_iter().map(|g| g.version).collect())
 }
 
 /// Prepares the merged version JSON for a Fabric profile on disk.

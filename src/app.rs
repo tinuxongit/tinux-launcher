@@ -1,4 +1,4 @@
-use crate::auth::Account;
+use crate::auth::{Account, DeviceCodePrompt};
 use crate::event::{Hit, InstallKind, Tab, WorkerMsg};
 use crate::java::{self, JavaInstall};
 use crate::manifest::{self, ManifestVersion, VersionKind, VersionManifest};
@@ -202,6 +202,7 @@ pub struct App {
     pub focus: Focus,
     pub auth_in_progress: bool,
     pub auth_error: Option<String>,
+    pub auth_device_code: Option<DeviceCodePrompt>,
 
     pub install: Option<InstallState>,
     pub launch_state: LaunchState,
@@ -360,6 +361,7 @@ impl App {
             focus: Focus::None,
             auth_in_progress: false,
             auth_error: None,
+            auth_device_code: None,
             install: None,
             launch_state: LaunchState::Idle,
             launch_error: None,
@@ -663,10 +665,26 @@ impl App {
             WorkerMsg::AuthStarted => {
                 self.auth_in_progress = true;
                 self.auth_error = None;
-                self.status_message = "Opened browser for Microsoft sign-in...".into();
+                self.auth_device_code = None;
+                self.status_message = "Requesting Microsoft device code...".into();
+            }
+            WorkerMsg::AuthDeviceCode {
+                user_code,
+                verification_uri,
+                expires_in,
+            } => {
+                self.auth_device_code = Some(DeviceCodePrompt {
+                    user_code: user_code.clone(),
+                    verification_uri: verification_uri.clone(),
+                    expires_in,
+                });
+                self.status_message = format!(
+                    "Open {verification_uri} and enter code {user_code}"
+                );
             }
             WorkerMsg::AuthSucceeded(a) => {
                 self.auth_in_progress = false;
+                self.auth_device_code = None;
                 self.status_message = format!("Signed in as {}", a.username);
                 let uuid = a.uuid.clone();
                 self.account = Some(a);
@@ -675,6 +693,7 @@ impl App {
             }
             WorkerMsg::AuthFailed(e) => {
                 self.auth_in_progress = false;
+                self.auth_device_code = None;
                 self.auth_error = Some(e.clone());
                 self.status_message = format!("Sign-in failed: {e}");
             }
@@ -966,6 +985,22 @@ pub fn spawn_manifest_fetch(
             }
             Err(e) => {
                 let _ = tx.send(WorkerMsg::ManifestFailed(format!("{e:#}")));
+            }
+        }
+    });
+}
+
+/// Best-effort silent restore of a previously signed-in Microsoft session.
+/// Fires `AuthSucceeded` if the saved refresh token is still valid; otherwise
+/// stays quiet and lets the user start in offline mode.
+pub fn spawn_session_restore(tx: UnboundedSender<WorkerMsg>) {
+    tokio::spawn(async move {
+        match crate::auth::try_refresh_session().await {
+            Ok(account) => {
+                let _ = tx.send(WorkerMsg::AuthSucceeded(account));
+            }
+            Err(e) => {
+                tracing::info!("no saved session restored: {e}");
             }
         }
     });

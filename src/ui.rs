@@ -22,7 +22,7 @@ use ratatui::{
 const HEADER_HEIGHT: u16 = 4;
 const STATUS_HEIGHT: u16 = 1;
 const BUTTON_H: u16 = 3;
-const SKIN_PREVIEW_BOX_H: u16 = 24;
+const SKIN_PREVIEW_BOX_H: u16 = 20;
 
 struct Fill {
     style: Style,
@@ -92,7 +92,102 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.info_popup.is_some() {
         draw_info_popup(f, app, frame);
     }
+    if app.auth_device_code.is_some() {
+        draw_device_code_modal(f, app, frame);
+    }
     draw_status(f, app, outer[4]);
+}
+
+fn draw_device_code_modal(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(prompt) = app.auth_device_code.clone() else {
+        return;
+    };
+    let w = 66u16.min(area.width.saturating_sub(4));
+    let h = 14u16.min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let rect = Rect::new(x, y, w, h);
+
+    f.render_widget(Fill { style: theme::base() }, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::ACCENT))
+        .style(theme::base())
+        .title(Span::styled(
+            " Sign in with Microsoft ",
+            theme::accent_bold(),
+        ))
+        .title_alignment(Alignment::Center);
+    let inner = block.inner(rect).inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    f.render_widget(block, rect);
+
+    let mut y = inner.y;
+    f.render_widget(
+        Paragraph::new("A browser window should have opened. If not, visit:")
+            .style(theme::base())
+            .wrap(Wrap { trim: true }),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            prompt.verification_uri.clone(),
+            Style::default()
+                .fg(theme::ACCENT_HI)
+                .bg(theme::BG)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        ))
+        .style(theme::base()),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 2;
+    f.render_widget(
+        Paragraph::new("Then enter this code:")
+            .style(theme::base()),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    let code_text = format!("    {}    ", prompt.user_code);
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            code_text,
+            Style::default()
+                .fg(theme::BG)
+                .bg(theme::GOLD)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(theme::base())
+        .alignment(Alignment::Center),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 2;
+    let mins = prompt.expires_in / 60;
+    let secs = prompt.expires_in % 60;
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            format!(
+                "Waiting for sign-in to complete... (code expires in ~{mins}m {secs}s)"
+            ),
+            theme::dim(),
+        ))
+        .style(theme::base())
+        .wrap(Wrap { trim: true }),
+        Rect::new(inner.x, y, inner.width, 2),
+    );
+    y += 2;
+
+    let btn_row = Rect::new(inner.x, inner.y + inner.height.saturating_sub(BUTTON_H), inner.width, BUTTON_H);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(18), Constraint::Length(2), Constraint::Length(10)])
+        .split(btn_row);
+    draw_button(f, app, cols[1], "Open URL again", Hit::ReopenAuthUrl, false);
+    draw_button(f, app, cols[3], "Cancel", Hit::CancelAuth, true);
+    let _ = y;
 }
 
 fn draw_filters_popup(f: &mut Frame, app: &mut App, area: Rect) {
@@ -1191,7 +1286,11 @@ fn draw_skin_section(f: &mut Frame, app: &mut App, inner: Rect, mut y: u16, onli
             .style(Style::default().fg(theme::BORDER).bg(theme::BG)),
         Rect::new(inner.x, y, inner.width, 1),
     );
-    y += 2;
+    // Tight layout: no gap below the separator, no gap between rows. The
+    // bordered button widgets are visually separated enough by their own
+    // borders, and online mode needs every row it can spare to fit the
+    // model toggle + URL field + 3-button action row inside the Profile box.
+    y += 1;
     if y + BUTTON_H >= bottom {
         return;
     }
@@ -1209,18 +1308,18 @@ fn draw_skin_section(f: &mut Frame, app: &mut App, inner: Rect, mut y: u16, onli
                 ("Slim", Hit::SkinModelSlim, app.skin_model == SkinModel::Slim),
             ],
         );
-        y += BUTTON_H + 1;
+        y += BUTTON_H;
         if y + BUTTON_H >= bottom {
             return;
         }
     }
 
     let label_rect = Rect::new(inner.x, y, 11, BUTTON_H);
-    draw_vcentered_label(f, "URL / user:", label_rect, theme::dim());
+    draw_vcentered_label(f, "URL / file:", label_rect, theme::dim());
     let url_w = inner.width.saturating_sub(12).min(54);
     let url_rect = Rect::new(inner.x + 12, y, url_w, BUTTON_H);
     draw_skin_url(f, app, url_rect);
-    y += BUTTON_H + 1;
+    y += BUTTON_H;
     if y + BUTTON_H >= bottom {
         return;
     }
@@ -1298,7 +1397,7 @@ fn draw_skin_url(f: &mut Frame, app: &mut App, rect: Rect) {
     let content = if focused {
         format!("{}▎", app.skin_url_input)
     } else if app.skin_url_input.is_empty() {
-        "(paste a skin URL or a Minecraft username like Notch)".to_string()
+        "(paste a URL, a username, or a local .png file path)".to_string()
     } else {
         app.skin_url_input.clone()
     };
@@ -1329,7 +1428,8 @@ fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default()
                 .fg(if pending { theme::GOLD } else { theme::ACCENT })
                 .add_modifier(Modifier::BOLD),
-        ));
+        ))
+        .title_alignment(Alignment::Center);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1342,8 +1442,14 @@ fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
         Some(preview) => {
             let cols = preview.cols();
             let rows = preview.rows();
+            // True center: account only for the visible content. In pending
+            // mode the "× clear preview" hint sits 1 row below the skin, so
+            // shift the skin up half a row so top padding == bottom padding
+            // around the whole skin+hint block.
+            let extra_below = if pending { 1 } else { 0 };
+            let total_content = rows + extra_below;
             let x = inner.x + inner.width.saturating_sub(cols) / 2;
-            let y = inner.y + inner.height.saturating_sub(rows + 2) / 2;
+            let y = inner.y + inner.height.saturating_sub(total_content) / 2;
             let preview_rect = Rect::new(x, y, cols.min(inner.width), rows.min(inner.height));
             f.render_widget(
                 SkinPreviewWidget {
@@ -1384,19 +1490,8 @@ fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
                 app.click_regions.push((right_rect, Hit::RotateSkinRight));
             }
 
-            let label_y = preview_rect.y + rows;
-            if label_y < inner.y + inner.height {
-                let label_rect = Rect::new(inner.x, label_y, inner.width, 1);
-                f.render_widget(
-                    Paragraph::new(app.skin_view.label())
-                        .style(theme::dim())
-                        .alignment(Alignment::Center),
-                    label_rect,
-                );
-            }
-
-            if pending && inner.height > rows + 2 {
-                let hint_y = preview_rect.y + rows + 1;
+            if pending && inner.height > rows + 1 {
+                let hint_y = preview_rect.y + rows;
                 let hint_rect = Rect::new(inner.x, hint_y, inner.width, 1);
                 let hovered = app.hover == Some(Hit::ClearPreviewButton);
                 let style = if hovered {
