@@ -16,7 +16,7 @@ pub async fn do_install(
     let version_id = entry.id.clone();
     let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
     let app_tx = tx.clone();
-    tokio::spawn(async move {
+    let forwarder = tokio::spawn(async move {
         while let Some(ev) = prog_rx.recv().await {
             let _ = app_tx.send(WorkerMsg::InstallProgress {
                 kind: InstallKind::Install,
@@ -27,7 +27,10 @@ pub async fn do_install(
         }
     });
 
-    match install_version(&client, &paths, &entry.id, &entry.url, &prog_tx).await {
+    let result = install_version(&client, &paths, &entry.id, &entry.url, &prog_tx).await;
+    drop(prog_tx);
+    let _ = forwarder.await;
+    match result {
         Ok(_) => {
             let _ = tx.send(WorkerMsg::InstallDone(version_id));
         }
@@ -57,7 +60,7 @@ pub async fn do_install_and_launch(
 
     let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
     let app_tx = tx.clone();
-    tokio::spawn(async move {
+    let forwarder = tokio::spawn(async move {
         while let Some(ev) = prog_rx.recv().await {
             let _ = app_tx.send(WorkerMsg::InstallProgress {
                 kind,
@@ -68,7 +71,10 @@ pub async fn do_install_and_launch(
         }
     });
 
-    let plan = match install_version(&client, &paths, &entry.id, &entry.url, &prog_tx).await {
+    let result = install_version(&client, &paths, &entry.id, &entry.url, &prog_tx).await;
+    drop(prog_tx);
+    let _ = forwarder.await;
+    let plan = match result {
         Ok(p) => p,
         Err(e) => {
             let _ = tx.send(WorkerMsg::InstallFailed {

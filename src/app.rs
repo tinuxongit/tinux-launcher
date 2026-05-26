@@ -73,6 +73,7 @@ pub struct App {
     pub launch_error: Option<String>,
 
     pub news: Vec<NewsEntry>,
+    pub news_offset: usize,
 
     pub logs: VecDeque<String>,
     pub log_offset: usize,
@@ -123,6 +124,7 @@ impl App {
             launch_state: LaunchState::Idle,
             launch_error: None,
             news: Vec::new(),
+            news_offset: 0,
             logs: VecDeque::with_capacity(LOG_CAPACITY),
             log_offset: 0,
             java,

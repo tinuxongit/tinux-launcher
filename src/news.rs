@@ -1,17 +1,33 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-const NEWS_URL: &str = "https://launchercontent.mojang.com/news.json";
+const NEWS_URL: &str = "https://launchercontent.mojang.com/v2/javaPatchNotes.json";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct NewsEntry {
     pub title: String,
     #[serde(default)]
-    pub category: String,
+    pub version: String,
     #[serde(default)]
     pub date: String,
-    #[serde(default, rename = "readMoreLink")]
-    pub read_more_link: String,
+    #[serde(default, rename = "shortText")]
+    pub short_text: String,
+    #[serde(default, rename = "type")]
+    pub kind: String,
+}
+
+impl NewsEntry {
+    pub fn date_short(&self) -> &str {
+        self.date.get(..10).unwrap_or(&self.date)
+    }
+
+    pub fn link(&self) -> String {
+        if self.version.is_empty() {
+            "https://www.minecraft.net/en-us/articles".into()
+        } else {
+            format!("https://minecraft.wiki/w/Java_Edition_{}", self.version)
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +43,6 @@ pub async fn fetch(client: &reqwest::Client) -> Result<Vec<NewsEntry>> {
         .error_for_status()?
         .json()
         .await
-        .context("parsing news.json")?;
+        .context("parsing patch notes")?;
     Ok(resp.entries)
 }

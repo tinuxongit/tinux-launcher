@@ -215,11 +215,13 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         MouseEventKind::ScrollUp => match app.tab {
             Tab::Versions => app.list_offset = app.list_offset.saturating_sub(3),
             Tab::Logs => app.log_offset = app.log_offset.saturating_add(3),
+            Tab::Play => app.news_offset = app.news_offset.saturating_sub(2),
             _ => {}
         },
         MouseEventKind::ScrollDown => match app.tab {
             Tab::Versions => app.list_offset = app.list_offset.saturating_add(3),
             Tab::Logs => app.log_offset = app.log_offset.saturating_sub(3),
+            Tab::Play => app.news_offset = app.news_offset.saturating_add(2),
             _ => {}
         },
         _ => {}
@@ -279,10 +281,9 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         Hit::ModeOnline => app.account_mode = AccountMode::Online,
         Hit::NewsItem(i) => {
             if let Some(entry) = app.news.get(i) {
-                if !entry.read_more_link.is_empty() {
-                    let _ = webbrowser::open(&entry.read_more_link);
-                    app.status_message = format!("Opened news: {}", entry.title);
-                }
+                let url = entry.link();
+                let _ = webbrowser::open(&url);
+                app.status_message = format!("Opened: {}", entry.title);
             }
         }
     }

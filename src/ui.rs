@@ -261,11 +261,41 @@ fn draw_news_list(f: &mut Frame, app: &mut App, area: Rect) {
         );
         return;
     }
-    let visible = (area.height as usize).min(app.news.len());
-    for (i, entry) in app.news.iter().take(visible).enumerate() {
-        let y = area.y + i as u16;
-        let rect = Rect::new(area.x, y, area.width, 1);
-        let hovered = app.hover == Some(Hit::NewsItem(i));
+    let total = app.news.len();
+    let h = area.height as usize;
+    if h == 0 {
+        return;
+    }
+    let has_scroll = total > h;
+
+    // Reserve a 1-col scrollbar gutter if we need one.
+    let chunks = if has_scroll {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0)])
+            .split(area)
+    };
+    let list_area = chunks[0];
+
+    if total > h && app.news_offset + h > total {
+        app.news_offset = total - h;
+    }
+    if total <= h {
+        app.news_offset = 0;
+    }
+    let start = app.news_offset;
+    let end = (start + h).min(total);
+
+    for (row_i, entry) in app.news[start..end].iter().enumerate() {
+        let global_i = start + row_i;
+        let y = list_area.y + row_i as u16;
+        let rect = Rect::new(list_area.x, y, list_area.width, 1);
+        let hovered = app.hover == Some(Hit::NewsItem(global_i));
         let title_style = if hovered {
             Style::default()
                 .fg(theme::ACCENT_HI)
@@ -274,21 +304,32 @@ fn draw_news_list(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             Style::default().fg(theme::FG).bg(theme::BG)
         };
+        let kind = if entry.kind.is_empty() {
+            String::new()
+        } else {
+            format!("  · {}", entry.kind)
+        };
         let line = Line::from(vec![
             Span::styled("▸ ", Style::default().fg(theme::ACCENT)),
-            Span::styled(format!("{}  ", entry.date), theme::dim()),
+            Span::styled(format!("{}  ", entry.date_short()), theme::dim()),
             Span::styled(entry.title.clone(), title_style),
-            Span::styled(
-                if entry.category.is_empty() {
-                    String::new()
-                } else {
-                    format!("  · {}", entry.category)
-                },
-                theme::dim(),
-            ),
+            Span::styled(kind, theme::dim()),
         ]);
         f.render_widget(Paragraph::new(line).style(theme::base()), rect);
-        app.click_regions.push((rect, Hit::NewsItem(i)));
+        app.click_regions.push((rect, Hit::NewsItem(global_i)));
+    }
+
+    if has_scroll {
+        let scroll_range = total - h;
+        let mut sb_state = ScrollbarState::new(scroll_range)
+            .position(app.news_offset)
+            .viewport_content_length(h);
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(Style::default().fg(theme::BORDER).bg(theme::BG))
+            .thumb_style(Style::default().fg(theme::ACCENT).bg(theme::BG))
+            .begin_symbol(None)
+            .end_symbol(None);
+        f.render_stateful_widget(sb, chunks[1], &mut sb_state);
     }
 }
 
