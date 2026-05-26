@@ -163,10 +163,12 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(1),        // 0 Selected: ...
             Constraint::Length(1),        // 1 Playing as: ...
             Constraint::Length(1),        // 2 gap
-            Constraint::Length(BUTTON_H), // 3 buttons
+            Constraint::Length(BUTTON_H), // 3 button
             Constraint::Length(1),        // 4 gap
             Constraint::Length(2),        // 5 progress
-            Constraint::Min(0),
+            Constraint::Length(1),        // 6 gap
+            Constraint::Length(1),        // 7 news header
+            Constraint::Min(0),           // 8 news list
         ])
         .split(inner);
 
@@ -208,19 +210,79 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     };
     f.render_widget(Paragraph::new(as_line).style(theme::base()), rows[1]);
 
-    let buttons = Layout::default()
+    let btn_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(18),
-            Constraint::Length(2),
-            Constraint::Length(18),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(22), Constraint::Min(0)])
         .split(rows[3]);
-    draw_button(f, app, buttons[0], "▶  Launch", Hit::LaunchButton, true);
-    draw_button(f, app, buttons[2], "⬇  Install", Hit::InstallButton, false);
+    let installed = app.selected_is_installed();
+    if installed {
+        draw_button(f, app, btn_cols[0], "▶  Launch", Hit::LaunchButton, true);
+    } else {
+        draw_button(f, app, btn_cols[0], "⬇  Install", Hit::InstallButton, true);
+    }
 
     draw_progress(f, app, rows[5]);
+    draw_news_header(f, rows[7]);
+    draw_news_list(f, app, rows[8]);
+}
+
+fn draw_news_header(f: &mut Frame, area: Rect) {
+    let title = " Latest news ";
+    let mut s = String::new();
+    s.push_str(title);
+    while s.chars().count() < area.width as usize {
+        s.push('─');
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(title, theme::accent_bold()),
+            Span::styled(
+                "─".repeat(area.width as usize - title.chars().count()),
+                Style::default().fg(theme::BORDER).bg(theme::BG),
+            ),
+        ]))
+        .style(theme::base()),
+        area,
+    );
+}
+
+fn draw_news_list(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.news.is_empty() {
+        f.render_widget(
+            Paragraph::new("Loading news from minecraft.net...").style(theme::dim()),
+            area,
+        );
+        return;
+    }
+    let visible = (area.height as usize).min(app.news.len());
+    for (i, entry) in app.news.iter().take(visible).enumerate() {
+        let y = area.y + i as u16;
+        let rect = Rect::new(area.x, y, area.width, 1);
+        let hovered = app.hover == Some(Hit::NewsItem(i));
+        let title_style = if hovered {
+            Style::default()
+                .fg(theme::ACCENT_HI)
+                .bg(theme::BG)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::default().fg(theme::FG).bg(theme::BG)
+        };
+        let line = Line::from(vec![
+            Span::styled("▸ ", Style::default().fg(theme::ACCENT)),
+            Span::styled(format!("{}  ", entry.date), theme::dim()),
+            Span::styled(entry.title.clone(), title_style),
+            Span::styled(
+                if entry.category.is_empty() {
+                    String::new()
+                } else {
+                    format!("  · {}", entry.category)
+                },
+                theme::dim(),
+            ),
+        ]);
+        f.render_widget(Paragraph::new(line).style(theme::base()), rect);
+        app.click_regions.push((rect, Hit::NewsItem(i)));
+    }
 }
 
 fn draw_vcentered_label(f: &mut Frame, label: &str, rect: Rect, style: Style) {

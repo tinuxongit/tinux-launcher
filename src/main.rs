@@ -7,6 +7,7 @@ mod java;
 mod launch;
 mod logging;
 mod manifest;
+mod news;
 mod paths;
 mod theme;
 mod ui;
@@ -40,6 +41,7 @@ async fn main() -> Result<()> {
     let (worker_tx, mut worker_rx) = unbounded_channel();
     let mut app = App::new(paths, worker_tx.clone());
     app::spawn_manifest_fetch(app.client.clone(), worker_tx.clone());
+    app::spawn_news_fetch(app.client.clone(), worker_tx.clone());
 
     let mut terminal = setup_terminal()?;
     terminal.clear()?;
@@ -275,6 +277,14 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         Hit::OpenConfigButton => open_config(app),
         Hit::ModeOffline => app.account_mode = AccountMode::Offline,
         Hit::ModeOnline => app.account_mode = AccountMode::Online,
+        Hit::NewsItem(i) => {
+            if let Some(entry) = app.news.get(i) {
+                if !entry.read_more_link.is_empty() {
+                    let _ = webbrowser::open(&entry.read_more_link);
+                    app.status_message = format!("Opened news: {}", entry.title);
+                }
+            }
+        }
     }
 }
 

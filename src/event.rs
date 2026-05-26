@@ -1,5 +1,6 @@
 use crate::auth::Account;
 use crate::manifest::VersionManifest;
+use crate::news::NewsEntry;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -20,6 +21,7 @@ pub enum Hit {
     OpenConfigButton,
     ModeOffline,
     ModeOnline,
+    NewsItem(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -61,4 +63,6 @@ pub enum WorkerMsg {
     LaunchLog(String),
     LaunchExited(i32),
     LaunchFailed(String),
+    NewsLoaded(Vec<NewsEntry>),
+    NewsFailed(String),
 }

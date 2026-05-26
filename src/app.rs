@@ -2,6 +2,7 @@ use crate::auth::Account;
 use crate::event::{Hit, Tab, WorkerMsg};
 use crate::java::{self, JavaInstall};
 use crate::manifest::{self, ManifestVersion, VersionKind, VersionManifest};
+use crate::news::{self, NewsEntry};
 use crate::paths::Paths;
 use ratatui::layout::Rect;
 use std::collections::VecDeque;
@@ -70,6 +71,8 @@ pub struct App {
     pub launch_state: LaunchState,
     pub launch_error: Option<String>,
 
+    pub news: Vec<NewsEntry>,
+
     pub logs: VecDeque<String>,
     pub log_offset: usize,
 
@@ -118,6 +121,7 @@ impl App {
             install: None,
             launch_state: LaunchState::Idle,
             launch_error: None,
+            news: Vec::new(),
             logs: VecDeque::with_capacity(LOG_CAPACITY),
             log_offset: 0,
             java,
@@ -159,6 +163,13 @@ impl App {
         let id = self.selected_version.as_ref()?;
         let m = self.manifest.as_ref()?;
         m.versions.iter().find(|v| &v.id == id).cloned()
+    }
+
+    pub fn selected_is_installed(&self) -> bool {
+        let Some(id) = &self.selected_version else {
+            return false;
+        };
+        self.paths.version_json(id).exists() && self.paths.version_jar(id).exists()
     }
 
     pub fn ensure_default_selection(&mut self) {
@@ -228,6 +239,12 @@ impl App {
                 self.status_message = format!("Launch failed: {e}");
                 self.needs_clear = true;
             }
+            WorkerMsg::NewsLoaded(entries) => {
+                self.news = entries;
+            }
+            WorkerMsg::NewsFailed(e) => {
+                tracing::warn!("news fetch failed: {e}");
+            }
         }
     }
 }
@@ -285,6 +302,19 @@ pub fn spawn_manifest_fetch(
             }
             Err(e) => {
                 let _ = tx.send(WorkerMsg::ManifestFailed(format!("{e:#}")));
+            }
+        }
+    });
+}
+
+pub fn spawn_news_fetch(client: reqwest::Client, tx: UnboundedSender<WorkerMsg>) {
+    tokio::spawn(async move {
+        match news::fetch(&client).await {
+            Ok(entries) => {
+                let _ = tx.send(WorkerMsg::NewsLoaded(entries));
+            }
+            Err(e) => {
+                let _ = tx.send(WorkerMsg::NewsFailed(format!("{e:#}")));
             }
         }
     });
