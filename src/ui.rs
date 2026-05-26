@@ -1,6 +1,6 @@
 use crate::app::{
-    AccountMode, App, Focus, InstallState, LaunchState, ModLoader, SkinModel, UpdateStatus,
-    VersionFilter,
+    AccountMode, App, ContentKind, Focus, InstallState, LaunchState, ModLoader, SkinModel,
+    UpdateStatus, VersionFilter,
 };
 use crate::event::{Hit, InstallKind, Tab};
 use crate::news::Block as ArticleBlock;
@@ -82,10 +82,340 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.mod_browser_open {
         draw_mod_browser(f, app, frame);
     }
+    if app.mod_browser_open && app.filters_popup_open {
+        draw_filters_popup(f, app, frame);
+    }
     if update_modal_visible(app) {
         draw_update_modal(f, app, frame);
     }
+    if app.info_popup.is_some() {
+        draw_info_popup(f, app, frame);
+    }
     draw_status(f, app, outer[4]);
+}
+
+fn draw_filters_popup(f: &mut Frame, app: &mut App, area: Rect) {
+    let w = 96u16.min(area.width.saturating_sub(4));
+    let h = 28u16.min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let rect = Rect::new(x, y, w, h);
+
+    f.render_widget(Fill { style: theme::base() }, rect);
+
+    let active = app.selected_categories.len();
+    let title = if active == 0 {
+        format!(" Filters · {} ", app.browser_kind.label())
+    } else {
+        format!(" Filters · {} · {} active ", app.browser_kind.label(), active)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::ACCENT))
+        .style(theme::base())
+        .title(Span::styled(title, theme::accent_bold()));
+    let inner = block.inner(rect).inner(Margin {
+        horizontal: 3,
+        vertical: 1,
+    });
+    f.render_widget(block, rect);
+
+    // Heading line — what this popup is for.
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Pick categories to narrow the results",
+                Style::default().fg(theme::FG).bg(theme::BG),
+            ),
+            Span::styled(
+                "  ·  multi-select  ·  changes apply live",
+                theme::dim(),
+            ),
+        ]))
+        .style(theme::base()),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+
+    // Reserve room for action buttons + 1 padding row.
+    let footer_h = BUTTON_H + 1;
+    let body_top = inner.y + 2;
+    let body_h = inner
+        .height
+        .saturating_sub(2 + footer_h);
+    let body_rect = Rect::new(inner.x, body_top, inner.width, body_h);
+
+    let cats: Vec<crate::modrinth::Category> = app
+        .visible_categories()
+        .into_iter()
+        .cloned()
+        .collect();
+    if cats.is_empty() {
+        f.render_widget(
+            Paragraph::new("Loading categories from Modrinth...")
+                .style(theme::dim())
+                .wrap(Wrap { trim: true }),
+            body_rect,
+        );
+    } else {
+        draw_grouped_chips(f, app, body_rect, &cats);
+    }
+
+    let btn_y = inner.y + inner.height.saturating_sub(BUTTON_H);
+    let btn_row = Rect::new(inner.x, btn_y, inner.width, BUTTON_H);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(16),
+            Constraint::Min(0),
+            Constraint::Length(12),
+        ])
+        .split(btn_row);
+    let has_active = active > 0;
+    if has_active {
+        draw_button(f, app, cols[0], "Clear all", Hit::ClearAllFilters, false);
+    } else {
+        draw_disabled_button(f, cols[0], "Clear all");
+    }
+    draw_button(f, app, cols[2], "Done", Hit::CloseFiltersPopup, true);
+}
+
+fn draw_grouped_chips(
+    f: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    cats: &[crate::modrinth::Category],
+) {
+    // Group categories by their Modrinth `header` value, preserving order.
+    let mut groups: Vec<(String, Vec<(usize, &crate::modrinth::Category)>)> = Vec::new();
+    for (idx, c) in cats.iter().enumerate() {
+        let header = if c.header.is_empty() {
+            "categories".to_string()
+        } else {
+            c.header.clone()
+        };
+        if let Some(g) = groups.iter_mut().find(|g| g.0 == header) {
+            g.1.push((idx, c));
+        } else {
+            groups.push((header, vec![(idx, c)]));
+        }
+    }
+
+    // Layout constants — 2 columns of bordered chip buttons, 3 rows tall each.
+    let chip_h: u16 = 3;
+    let row_gap: u16 = 0;
+    let group_header_h: u16 = 2; // separator line + 1 spacer
+    let col_count: u16 = 2;
+    let col_gap: u16 = 2;
+    let total_gap_w = col_gap * (col_count - 1);
+
+    // Pre-compute total content height for scroll math.
+    let mut total_h: u16 = 0;
+    for (_, members) in &groups {
+        total_h += group_header_h;
+        let rows = ((members.len() as u16) + col_count - 1) / col_count;
+        total_h += rows * (chip_h + row_gap);
+        total_h += 1; // group bottom spacer
+    }
+
+    // Clamp scroll.
+    let max_scroll = total_h.saturating_sub(area.height);
+    let scroll = app.filters_scroll.min(max_scroll);
+    app.filters_scroll = scroll;
+
+    // Reserve a 1-col scrollbar gutter when there's overflow.
+    let needs_scroll = total_h > area.height;
+    let (content_rect, sb_rect) = if needs_scroll {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(1)])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
+    let content_col_w = content_rect.width.saturating_sub(total_gap_w) / col_count;
+
+    // Virtual cursor in "content space" (0 = top of all content).
+    let visible_top = scroll;
+    let visible_bottom = scroll + content_rect.height;
+    let mut vy: u16 = 0;
+
+    for (header, members) in &groups {
+        // Section header bar
+        if vy + group_header_h > visible_top && vy < visible_bottom {
+            let actual_y = content_rect.y + vy.saturating_sub(visible_top);
+            if actual_y < content_rect.y + content_rect.height {
+                let header_label = pretty_category(header);
+                let header_text = format!("  {header_label}  ");
+                let dash_w = (content_rect.width as usize)
+                    .saturating_sub(header_text.chars().count());
+                let line = Line::from(vec![
+                    Span::styled(
+                        header_text,
+                        Style::default()
+                            .fg(theme::ACCENT)
+                            .bg(theme::BG)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "─".repeat(dash_w),
+                        Style::default().fg(theme::BORDER).bg(theme::BG),
+                    ),
+                ]);
+                f.render_widget(
+                    Paragraph::new(line).style(theme::base()),
+                    Rect::new(content_rect.x, actual_y, content_rect.width, 1),
+                );
+            }
+        }
+        vy += group_header_h;
+
+        // Chip grid
+        for (i, (idx, cat)) in members.iter().enumerate() {
+            let col = (i as u16) % col_count;
+            let row = (i as u16) / col_count;
+            let chip_vy = vy + row * (chip_h + row_gap);
+            // Only render chips whose vertical span overlaps the visible window.
+            if chip_vy + chip_h <= visible_top || chip_vy >= visible_bottom {
+                continue;
+            }
+            let actual_y = content_rect.y + chip_vy.saturating_sub(visible_top);
+            // If the chip would render past the bottom, skip (avoid partial-button glitches).
+            if actual_y + chip_h > content_rect.y + content_rect.height {
+                continue;
+            }
+            let chip_x = content_rect.x + col * (content_col_w + col_gap);
+            let chip_rect = Rect::new(chip_x, actual_y, content_col_w, chip_h);
+            let selected = app.selected_categories.iter().any(|s| s == &cat.name);
+            draw_chip_button(f, app, chip_rect, &pretty_category(&cat.name), selected, Hit::CategoryChip(*idx));
+        }
+        let rows = ((members.len() as u16) + col_count - 1) / col_count;
+        vy += rows * (chip_h + row_gap);
+        vy += 1;
+    }
+
+    // Scrollbar
+    if let Some(sb_rect) = sb_rect {
+        let mut sb_state = ScrollbarState::new(max_scroll as usize)
+            .position(scroll as usize)
+            .viewport_content_length(content_rect.height as usize);
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(Style::default().fg(theme::BORDER).bg(theme::BG))
+            .thumb_style(Style::default().fg(theme::ACCENT).bg(theme::BG))
+            .begin_symbol(None)
+            .end_symbol(None);
+        f.render_stateful_widget(sb, sb_rect, &mut sb_state);
+    }
+}
+
+fn draw_chip_button(
+    f: &mut Frame,
+    app: &mut App,
+    rect: Rect,
+    label: &str,
+    selected: bool,
+    hit: Hit,
+) {
+    let hovered = app.hover == Some(hit);
+    let (border_fg, label_fg, modifier) = if selected {
+        (theme::GOLD, theme::GOLD, Modifier::BOLD)
+    } else if hovered {
+        (theme::ACCENT_HI, theme::ACCENT_HI, Modifier::BOLD)
+    } else {
+        (theme::BORDER, theme::FG, Modifier::empty())
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_fg).bg(theme::BG))
+        .style(theme::base());
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let prefix = if selected { "✓  " } else { "" };
+    let text = format!("{prefix}{label}");
+    let mid = inner.height / 2;
+    let styled = Span::styled(
+        text,
+        Style::default()
+            .fg(label_fg)
+            .bg(theme::BG)
+            .add_modifier(modifier),
+    );
+    let lines: Vec<Line> = (0..inner.height)
+        .map(|i| {
+            if i == mid {
+                Line::from(vec![styled.clone()])
+            } else {
+                Line::from("")
+            }
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .style(theme::base()),
+        inner,
+    );
+    app.click_regions.push((rect, hit));
+}
+
+fn draw_info_popup(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(message) = app.info_popup.clone() else {
+        return;
+    };
+    let w = 60u16.min(area.width.saturating_sub(4));
+    // text width inside borders + 2-col horizontal margin
+    let text_w = w.saturating_sub(6) as usize;
+    let wrapped_lines: u16 = message
+        .lines()
+        .map(|l| {
+            let chars = l.chars().count();
+            if chars == 0 {
+                1
+            } else {
+                ((chars + text_w - 1) / text_w).max(1) as u16
+            }
+        })
+        .sum();
+    // borders(2) + vertical margin(2) + text + 1 gap + button(3) = wrapped_lines + 8
+    let h = (wrapped_lines + 8).min(area.height.saturating_sub(4)).max(8);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let rect = Rect::new(x, y, w, h);
+
+    // Paint over whatever was underneath before drawing the modal.
+    f.render_widget(Fill { style: theme::base() }, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::ACCENT))
+        .style(theme::base())
+        .title(Span::styled(" Heads up ", theme::accent_bold()));
+    let inner = block.inner(rect).inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    f.render_widget(block, rect);
+
+    let text_h = inner.height.saturating_sub(BUTTON_H + 1);
+    let text_rect = Rect::new(inner.x, inner.y, inner.width, text_h);
+    f.render_widget(
+        Paragraph::new(message)
+            .style(theme::base())
+            .wrap(Wrap { trim: true }),
+        text_rect,
+    );
+
+    let btn_y = inner.y + inner.height.saturating_sub(BUTTON_H);
+    let btn_row = Rect::new(inner.x, btn_y, inner.width, BUTTON_H);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(10), Constraint::Min(0)])
+        .split(btn_row);
+    draw_button(f, app, cols[1], "OK", Hit::DismissInfoPopup, true);
 }
 
 fn update_modal_visible(app: &App) -> bool {
@@ -284,8 +614,12 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         draw_button(f, app, btn_cols[0], "⬇  Install", Hit::InstallButton, true);
     }
-    if modded && installed {
-        draw_button(f, app, btn_cols[2], "📦 Browse Mods", Hit::BrowseModsButton, false);
+    if modded {
+        if installed {
+            draw_button(f, app, btn_cols[2], "📦 Browse Mods", Hit::BrowseModsButton, false);
+        } else {
+            draw_dim_clickable_button(f, app, btn_cols[2], "📦 Browse Mods", Hit::BrowseModsButton);
+        }
     }
 
     if installing {
@@ -610,13 +944,21 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
     let start = app.list_offset;
     let end = (start + rows_n).min(total);
 
+    let modded = app.filter == VersionFilter::Modded;
     for (i, (id, kind_label, date)) in snapshot[start..end].iter().enumerate() {
         let global_idx = start + i;
         let y = content_rect.y + i as u16;
         let rect = Rect::new(content_rect.x, y, content_rect.width, 1);
         let selected = app.selected_version.as_deref() == Some(id.as_str());
         let hovered = app.hover == Some(Hit::VersionRow(global_idx));
-        let style = if selected {
+        let installed = if modded {
+            app.modded_id_for(id)
+                .map(|mid| app.is_installed(&mid))
+                .unwrap_or(false)
+        } else {
+            app.is_installed(id)
+        };
+        let row_style = if selected {
             theme::list_selected()
         } else if hovered {
             theme::button_idle()
@@ -624,8 +966,22 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
             theme::base()
         };
         let marker = if selected { "▶" } else { " " };
-        let line = format!(" {marker} {:<18} {:<10} {date} ", id, kind_label);
-        f.render_widget(Paragraph::new(line).style(style), rect);
+        let prefix = format!(" {marker} ");
+        let check = if installed { "✓ " } else { "  " };
+        let body = format!("{:<18} {:<10} {date} ", id, kind_label);
+        let check_style = if installed {
+            let mut s = row_style;
+            s = s.fg(theme::ACCENT_HI).add_modifier(Modifier::BOLD);
+            s
+        } else {
+            row_style
+        };
+        let line = Line::from(vec![
+            Span::styled(prefix, row_style),
+            Span::styled(check.to_string(), check_style),
+            Span::styled(body, row_style),
+        ]);
+        f.render_widget(Paragraph::new(line).style(row_style), rect);
         app.click_regions.push((rect, Hit::VersionRow(global_idx)));
     }
 
@@ -1218,6 +1574,15 @@ fn draw_logs(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_disabled_button(f: &mut Frame, rect: Rect, label: &str) {
+    draw_disabled_button_inner(f, rect, label, None);
+}
+
+fn draw_dim_clickable_button(f: &mut Frame, app: &mut App, rect: Rect, label: &str, hit: Hit) {
+    draw_disabled_button_inner(f, rect, label, Some(hit));
+    app.click_regions.push((rect, hit));
+}
+
+fn draw_disabled_button_inner(f: &mut Frame, rect: Rect, label: &str, _click: Option<Hit>) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -1239,7 +1604,6 @@ fn draw_disabled_button(f: &mut Frame, rect: Rect, label: &str) {
             .alignment(Alignment::Center),
         inner,
     );
-    // Intentionally no click region — disabled buttons swallow no events.
 }
 
 fn draw_button(
@@ -1695,8 +2059,8 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_mod_browser(f: &mut Frame, app: &mut App, area: Rect) {
     wipe(f, area);
     let title = format!(
-        " Mods · {} · {} ",
-        app.loader.label(),
+        " Content browser · {} · {} ",
+        ModLoader::Fabric.label(),
         app.selected_version.clone().unwrap_or_else(|| "?".into())
     );
     let block = Block::default()
@@ -1711,39 +2075,15 @@ fn draw_mod_browser(f: &mut Frame, app: &mut App, area: Rect) {
     });
     f.render_widget(block, area);
 
-    // Top row: close button on the right
-    let close_row = Rect::new(inner.x, inner.y, inner.width, 1);
-    let close_cols = Layout::default()
+    // Top row: tab strip + close button
+    let top_row = Rect::new(inner.x, inner.y, inner.width, 1);
+    let tabs_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(7),
-            Constraint::Min(0),
-            Constraint::Length(8),
-        ])
-        .split(close_row);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            "Loader:",
-            theme::dim(),
-        ))
-        .style(theme::base()),
-        close_cols[0],
-    );
-    let loader_rect = close_cols[1];
-    let loader_label = format!(
-        " {} {}",
-        if app.loader == ModLoader::Fabric { "●" } else { "○" },
-        ModLoader::Fabric.label()
-    );
-    let hovered = app.hover == Some(Hit::LoaderFabric);
-    let style = if hovered {
-        Style::default().fg(theme::ACCENT_HI).bg(theme::BG).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme::FG).bg(theme::BG)
-    };
-    f.render_widget(Paragraph::new(loader_label).style(style), loader_rect);
-    app.click_regions.push((loader_rect, Hit::LoaderFabric));
-    let close_rect = close_cols[2];
+        .constraints([Constraint::Min(0), Constraint::Length(8)])
+        .split(top_row);
+    draw_browser_tabs(f, app, tabs_cols[0]);
+
+    let close_rect = tabs_cols[1];
     let hovered = app.hover == Some(Hit::CloseModBrowser);
     let cs = if hovered {
         Style::default().fg(theme::ACCENT_HI).bg(theme::BG).add_modifier(Modifier::BOLD)
@@ -1756,7 +2096,15 @@ fn draw_mod_browser(f: &mut Frame, app: &mut App, area: Rect) {
     );
     app.click_regions.push((close_rect, Hit::CloseModBrowser));
 
-    // Body: search field, results, installed list
+    // Separator under tabs
+    let sep_y = inner.y + 1;
+    f.render_widget(
+        Paragraph::new("─".repeat(inner.width as usize))
+            .style(Style::default().fg(theme::BORDER).bg(theme::BG)),
+        Rect::new(inner.x, sep_y, inner.width, 1),
+    );
+
+    // Body
     let body_y = inner.y + 2;
     let body = Rect::new(
         inner.x,
@@ -1776,6 +2124,44 @@ fn draw_mod_browser(f: &mut Frame, app: &mut App, area: Rect) {
     draw_installed_mods_pane(f, app, right);
 }
 
+fn draw_browser_tabs(f: &mut Frame, app: &mut App, area: Rect) {
+    let mut x = area.x;
+    for kind in ContentKind::ALL {
+        let label = format!(" {} ", kind.label());
+        let w = label.chars().count() as u16;
+        if x + w > area.x + area.width {
+            break;
+        }
+        let rect = Rect::new(x, area.y, w, 1);
+        let active = app.browser_kind == kind;
+        let hit = match kind {
+            ContentKind::Mods => Hit::BrowserTabMods,
+            ContentKind::Shaders => Hit::BrowserTabShaders,
+            ContentKind::ResourcePacks => Hit::BrowserTabResourcePacks,
+        };
+        let disabled = matches!(kind, ContentKind::Shaders) && !app.shaders_available();
+        let hovered = app.hover == Some(hit);
+        let style = if active {
+            Style::default()
+                .fg(theme::ACCENT_HI)
+                .bg(theme::BG)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else if disabled {
+            Style::default().fg(theme::FG_DIM).bg(theme::BG)
+        } else if hovered {
+            Style::default().fg(theme::ACCENT).bg(theme::BG).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::FG).bg(theme::BG)
+        };
+        let suffix = if disabled { " 🔒" } else { "" };
+        let display = format!("{label}{suffix}");
+        f.render_widget(Paragraph::new(display).style(style), rect);
+        // Even disabled tabs are clickable — clicking shows an info popup.
+        app.click_regions.push((rect, hit));
+        x += w + 2;
+    }
+}
+
 fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -1785,13 +2171,34 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Min(0),
         ])
         .split(area);
-    draw_mod_search_field(f, app, rows[0]);
+
+    // Split the top row: search field on the left, Filters button on the right.
+    let top_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(18)])
+        .split(rows[0]);
+    draw_mod_search_field(f, app, top_cols[0]);
+    let count = app.selected_categories.len();
+    let filter_label = if count == 0 {
+        "▼ Filters".to_string()
+    } else {
+        format!("▼ Filters ({count})")
+    };
+    draw_button(
+        f,
+        app,
+        top_cols[1],
+        &filter_label,
+        Hit::OpenFiltersButton,
+        count > 0,
+    );
 
     let list_area = rows[2];
     wipe(f, list_area);
-    if app.mod_search_loading {
+
+    if app.mod_search_loading && app.mod_search_results.is_empty() {
         f.render_widget(
-            Paragraph::new("Searching Modrinth...").style(theme::dim()),
+            Paragraph::new("Loading from Modrinth...").style(theme::dim()),
             list_area,
         );
         return;
@@ -1808,7 +2215,7 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
     if app.mod_search_results.is_empty() {
         f.render_widget(
             Paragraph::new(
-                "Type a mod name and press Enter to search Modrinth.\nClick a result to install.",
+                "No results. Try a different search term, or clear the field and press Enter for popular picks.",
             )
             .style(theme::dim())
             .wrap(Wrap { trim: true }),
@@ -1817,32 +2224,53 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    let h = list_area.height as usize / 2; // each row is 2 lines tall
+    // Reserve the last row for a "Show more" button when more results are available.
+    let has_more = (app.mod_search_results.len() as u32) < app.mod_search_total;
+    let footer_h: u16 = if has_more { 1 } else { 0 };
+    let usable_h = list_area.height.saturating_sub(footer_h);
+
+    let h = (usable_h as usize) / 2; // each row is 2 lines tall
     let total = app.mod_search_results.len();
     let start = app.mod_search_offset.min(total);
     let end = (start + h).min(total);
     for (i, hit) in app.mod_search_results[start..end].iter().enumerate() {
         let global = start + i;
         let y = list_area.y + (i as u16) * 2;
-        if y + 1 >= list_area.y + list_area.height {
+        if y + 1 >= list_area.y + usable_h {
             break;
         }
         let row_rect = Rect::new(list_area.x, y, list_area.width, 2);
-        let hovered = app.hover == Some(Hit::ModResult(global));
-        let bg = if hovered { theme::PANEL_HI } else { theme::BG };
+        let installed = app.is_project_installed(&hit.project_id);
         let installing_this = app.mod_installing.as_deref() == Some(hit.project_id.as_str());
+        let hovered = app.hover == Some(Hit::ModResult(global)) && !installed;
+        let bg = if hovered { theme::PANEL_HI } else { theme::BG };
+        let (title_fg, body_fg, dim_fg) = if installed {
+            (theme::FG_DIM, theme::FG_DIM, theme::FG_DIM)
+        } else {
+            (theme::ACCENT_HI, theme::FG, theme::FG_DIM)
+        };
         let title_style = Style::default()
-            .fg(theme::ACCENT_HI)
+            .fg(title_fg)
             .bg(bg)
-            .add_modifier(Modifier::BOLD);
-        let dim_style = Style::default().fg(theme::FG_DIM).bg(bg);
+            .add_modifier(if installed { Modifier::empty() } else { Modifier::BOLD });
+        let dim_style = Style::default().fg(dim_fg).bg(bg);
+        let prefix = if installed {
+            "✓ "
+        } else if installing_this {
+            "⏳ "
+        } else {
+            "▸ "
+        };
+        let prefix_color = if installed { theme::ACCENT } else { theme::ACCENT };
         let l1 = Line::from(vec![
-            Span::styled(
-                if installing_this { "⏳ " } else { "▸ " },
-                Style::default().fg(theme::ACCENT).bg(bg),
-            ),
+            Span::styled(prefix, Style::default().fg(prefix_color).bg(bg)),
             Span::styled(hit.title.clone(), title_style),
             Span::styled(format!("  by {}", hit.author), dim_style),
+            if installed {
+                Span::styled("   (installed)", Style::default().fg(theme::ACCENT).bg(bg))
+            } else {
+                Span::raw("")
+            },
         ]);
         let desc = if hit.description.len() > 100 {
             format!("{}...", &hit.description[..97])
@@ -1851,14 +2279,67 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
         };
         let l2 = Line::from(vec![
             Span::styled("    ", Style::default().bg(bg)),
-            Span::styled(desc, Style::default().fg(theme::FG).bg(bg)),
+            Span::styled(desc, Style::default().fg(body_fg).bg(bg)),
         ]);
         f.render_widget(
             Paragraph::new(vec![l1, l2]).style(Style::default().bg(bg)),
             row_rect,
         );
-        app.click_regions.push((row_rect, Hit::ModResult(global)));
+        if !installed {
+            app.click_regions.push((row_rect, Hit::ModResult(global)));
+        }
     }
+
+    if has_more {
+        let footer_y = list_area.y + usable_h;
+        let footer_rect = Rect::new(list_area.x, footer_y, list_area.width, 1);
+        let hovered = app.hover == Some(Hit::ShowMoreModsButton);
+        let label = if app.mod_search_loading {
+            "Loading more...".to_string()
+        } else {
+            format!(
+                "↓ Show more ({} of {})",
+                app.mod_search_results.len(),
+                app.mod_search_total
+            )
+        };
+        let style = if hovered {
+            Style::default()
+                .fg(theme::ACCENT_HI)
+                .bg(theme::BG)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::default()
+                .fg(theme::ACCENT)
+                .bg(theme::BG)
+                .add_modifier(Modifier::UNDERLINED)
+        };
+        f.render_widget(
+            Paragraph::new(label).style(style).alignment(Alignment::Center),
+            footer_rect,
+        );
+        if !app.mod_search_loading {
+            app.click_regions.push((footer_rect, Hit::ShowMoreModsButton));
+        }
+    }
+}
+
+fn pretty_category(name: &str) -> String {
+    // Modrinth slugs are kebab-case lowercase; Title-Case the words for display.
+    let mut out = String::with_capacity(name.len());
+    for (i, part) in name.split('-').enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            for c in first.to_uppercase() {
+                out.push(c);
+            }
+            out.extend(chars);
+        }
+    }
+    out
 }
 
 fn draw_mod_search_field(f: &mut Frame, app: &mut App, rect: Rect) {
@@ -1869,20 +2350,30 @@ fn draw_mod_search_field(f: &mut Frame, app: &mut App, rect: Rect) {
     } else if hovered {
         theme::FG_DIM
     } else {
-        theme::BORDER
+        theme::ACCENT
+    };
+    let title = match app.browser_kind {
+        ContentKind::Mods => " 🔍 Filter mods ",
+        ContentKind::Shaders => " 🔍 Filter shaders ",
+        ContentKind::ResourcePacks => " 🔍 Filter texture packs ",
     };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_fg).bg(theme::BG))
         .style(theme::base())
-        .title(Span::styled(" Search mods ", theme::dim()));
+        .title(Span::styled(title, theme::accent_bold()));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
+    let placeholder = match app.browser_kind {
+        ContentKind::Mods => "Type to filter mods, then press Enter",
+        ContentKind::Shaders => "Type to filter shader packs, then press Enter",
+        ContentKind::ResourcePacks => "Type to filter texture packs, then press Enter",
+    };
     let content = if focused {
         format!("{}▎", app.mod_search_query)
     } else if app.mod_search_query.is_empty() {
-        "(click here and type, then Enter)".to_string()
+        placeholder.to_string()
     } else {
         app.mod_search_query.clone()
     };

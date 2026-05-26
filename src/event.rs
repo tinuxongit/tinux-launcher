@@ -1,6 +1,6 @@
 use crate::auth::Account;
 use crate::manifest::VersionManifest;
-use crate::modrinth::SearchHit;
+use crate::modrinth::{Category, SearchHit};
 use crate::news::{Article, NewsEntry};
 use crate::skin::SkinPreview;
 use crate::update::UpdateInfo;
@@ -24,10 +24,18 @@ pub enum Hit {
     FilterSnapshots,
     FilterOld,
     FilterModded,
-    LoaderFabric,
     BrowseModsButton,
     ModResult(usize),
     RemoveModButton(usize),
+    BrowserTabMods,
+    BrowserTabShaders,
+    BrowserTabResourcePacks,
+    ShowMoreModsButton,
+    DismissInfoPopup,
+    CategoryChip(usize),
+    OpenFiltersButton,
+    CloseFiltersPopup,
+    ClearAllFilters,
     CloseModBrowser,
     ModSearchField,
     OfflineNameField,
@@ -129,7 +137,12 @@ pub enum WorkerMsg {
     FabricMcVersionsLoaded(Vec<String>),
     FabricMcVersionsFailed(String),
     ModSearchStarted,
-    ModSearchDone(Vec<SearchHit>),
+    ModSearchDone {
+        hits: Vec<SearchHit>,
+        total: u32,
+        offset: u32,
+        append: bool,
+    },
     ModSearchFailed(String),
     ModInstallStarted(String),
     ModInstallDone {
@@ -142,4 +155,6 @@ pub enum WorkerMsg {
         project: String,
         error: String,
     },
+    CategoriesLoaded(Vec<Category>),
+    CategoriesFailed(String),
 }

@@ -1,5 +1,4 @@
-use anyhow::{Context, Result};
-use serde::Deserialize;
+use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -9,8 +8,10 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::event::WorkerMsg;
 
-const RELEASES_URL: &str =
-    "https://api.github.com/repos/tinuxongit/tinux-launcher/releases/latest";
+const REPO_OWNER: &str = "tinuxongit";
+const REPO_NAME: &str = "tinux-launcher";
+const LATEST_REDIRECT_URL: &str =
+    "https://github.com/tinuxongit/tinux-launcher/releases/latest";
 
 #[derive(Debug, Clone)]
 pub struct UpdateInfo {
@@ -28,66 +29,77 @@ pub struct ReleaseAsset {
     pub size: u64,
 }
 
-#[derive(Debug, Deserialize)]
-struct GhRelease {
-    tag_name: String,
-    #[serde(default)]
-    html_url: String,
-    #[serde(default)]
-    assets: Vec<GhAsset>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GhAsset {
-    name: String,
-    browser_download_url: String,
-    #[serde(default)]
-    size: u64,
-}
-
-pub async fn check(client: &reqwest::Client) -> Result<UpdateInfo> {
+pub async fn check(_client: &reqwest::Client) -> Result<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION").to_string();
-    let resp = client
-        .get(RELEASES_URL)
-        .header("Accept", "application/vnd.github+json")
+
+    // Use the website redirect (not the REST API) to dodge the 60/hr unauthenticated
+    // rate limit. GET /releases/latest 302s to /releases/tag/<tag>.
+    let no_redirect = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .user_agent(format!("tinux-launcher/{current}"))
+        .build()
+        .context("building update HTTP client")?;
+    let resp = no_redirect
+        .get(LATEST_REDIRECT_URL)
         .send()
         .await
-        .context("contacting GitHub releases API")?
-        .error_for_status()
-        .context("GitHub releases status")?;
-    let rel: GhRelease = resp.json().await.context("parsing release JSON")?;
-    let latest = rel.tag_name.trim_start_matches('v').to_string();
+        .context("fetching latest release redirect")?;
+    let location = resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| anyhow!("no Location header on releases/latest"))?
+        .to_string();
+
+    // Location looks like: https://github.com/owner/repo/releases/tag/v0.1.4
+    let tag = location
+        .rsplit('/')
+        .next()
+        .ok_or_else(|| anyhow!("could not parse tag from {location}"))?
+        .to_string();
+    if tag.is_empty() || tag == "latest" {
+        anyhow::bail!("redirect didn't point at a tagged release: {location}");
+    }
+    let latest = tag.trim_start_matches('v').to_string();
     let up_to_date = latest == current;
-    let asset = pick_asset(&rel.assets);
+    let html_url = format!(
+        "https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/tag/{tag}"
+    );
+    let asset = if up_to_date {
+        None
+    } else {
+        asset_for_current_platform(&tag)
+    };
     Ok(UpdateInfo {
         current,
         latest,
-        html_url: rel.html_url,
+        html_url,
         up_to_date,
         asset,
     })
 }
 
-fn pick_asset(assets: &[GhAsset]) -> Option<ReleaseAsset> {
-    let want_windows = cfg!(target_os = "windows");
-    let want_macos = cfg!(target_os = "macos");
-    let want_linux = cfg!(target_os = "linux");
-    let pick = assets.iter().find(|a| {
-        let n = a.name.to_lowercase();
-        if want_windows {
-            n.contains("windows") || n.ends_with(".exe")
-        } else if want_macos {
-            n.contains("darwin") || n.contains("macos") || n.contains("apple")
-        } else if want_linux {
-            n.contains("linux")
+fn asset_for_current_platform(tag: &str) -> Option<ReleaseAsset> {
+    let name: &str = if cfg!(target_os = "windows") {
+        "tinux-launcher-windows-x64.exe"
+    } else if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") {
+            "tinux-launcher-macos-arm64"
         } else {
-            false
+            "tinux-launcher-macos-x64"
         }
-    })?;
+    } else if cfg!(target_os = "linux") {
+        "tinux-launcher-linux-x64"
+    } else {
+        return None;
+    };
+    let url = format!(
+        "https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/download/{tag}/{name}"
+    );
     Some(ReleaseAsset {
-        name: pick.name.clone(),
-        url: pick.browser_download_url.clone(),
-        size: pick.size,
+        name: name.to_string(),
+        url,
+        size: 0,
     })
 }
 

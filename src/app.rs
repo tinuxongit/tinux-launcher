@@ -2,7 +2,8 @@ use crate::auth::Account;
 use crate::event::{Hit, InstallKind, Tab, WorkerMsg};
 use crate::java::{self, JavaInstall};
 use crate::manifest::{self, ManifestVersion, VersionKind, VersionManifest};
-use crate::modrinth::SearchHit;
+use crate::meta::InstanceMeta;
+use crate::modrinth::{Category, SearchHit};
 use crate::news::{self, Article, NewsEntry};
 use crate::paths::Paths;
 use crate::skin::{SkinPreview, SkinView};
@@ -23,6 +24,27 @@ pub enum VersionFilter {
     Modded,
 }
 
+impl VersionFilter {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VersionFilter::Releases => "releases",
+            VersionFilter::Snapshots => "snapshots",
+            VersionFilter::Old => "old",
+            VersionFilter::Modded => "modded",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "releases" => VersionFilter::Releases,
+            "snapshots" => VersionFilter::Snapshots,
+            "old" => VersionFilter::Old,
+            "modded" => VersionFilter::Modded,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModLoader {
     Fabric,
@@ -39,6 +61,50 @@ impl ModLoader {
         match self {
             ModLoader::Fabric => "fabric",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentKind {
+    Mods,
+    Shaders,
+    ResourcePacks,
+}
+
+impl ContentKind {
+    pub const ALL: [ContentKind; 3] = [
+        ContentKind::Mods,
+        ContentKind::Shaders,
+        ContentKind::ResourcePacks,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ContentKind::Mods => "Mods",
+            ContentKind::Shaders => "Shaders",
+            ContentKind::ResourcePacks => "Texture Packs",
+        }
+    }
+
+    pub fn project_type(self) -> &'static str {
+        match self {
+            ContentKind::Mods => "mod",
+            ContentKind::Shaders => "shader",
+            ContentKind::ResourcePacks => "resourcepack",
+        }
+    }
+
+    pub fn folder(self) -> &'static str {
+        match self {
+            ContentKind::Mods => "mods",
+            ContentKind::Shaders => "shaderpacks",
+            ContentKind::ResourcePacks => "resourcepacks",
+        }
+    }
+
+    /// Whether the Modrinth version-list query should filter by loader.
+    pub fn uses_loader(self) -> bool {
+        matches!(self, ContentKind::Mods)
     }
 }
 
@@ -173,13 +239,22 @@ pub struct App {
     pub fabric_mc_versions: Vec<String>,
 
     pub mod_browser_open: bool,
+    pub browser_kind: ContentKind,
     pub mod_search_query: String,
     pub mod_search_results: Vec<SearchHit>,
     pub mod_search_loading: bool,
     pub mod_search_error: Option<String>,
     pub mod_search_offset: usize,
+    pub mod_search_api_offset: u32,
+    pub mod_search_total: u32,
     pub mod_installing: Option<String>,
     pub installed_mods: Vec<String>,
+    pub info_popup: Option<String>,
+    pub categories: Vec<Category>,
+    pub selected_categories: Vec<String>,
+    pub filters_popup_open: bool,
+    pub filters_scroll: u16,
+    pub installed_meta: InstanceMeta,
 }
 
 impl App {
@@ -201,8 +276,17 @@ impl App {
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "Steve".to_string());
         let saved_skin_url = cfg_opt
-            .and_then(|c| c.offline_skin_url)
+            .as_ref()
+            .and_then(|c| c.offline_skin_url.clone())
             .unwrap_or_default();
+        let saved_version = cfg_opt
+            .as_ref()
+            .and_then(|c| c.last_played_version.clone())
+            .filter(|s| !s.trim().is_empty());
+        let saved_filter = cfg_opt
+            .as_ref()
+            .and_then(|c| c.last_filter.as_deref().and_then(VersionFilter::parse))
+            .unwrap_or(VersionFilter::Releases);
         Self {
             running: true,
             tab: Tab::Play,
@@ -210,9 +294,9 @@ impl App {
             client,
             manifest: None,
             manifest_error: None,
-            filter: VersionFilter::Releases,
+            filter: saved_filter,
             list_offset: 0,
-            selected_version: None,
+            selected_version: saved_version,
             hover: None,
             click_regions: Vec::with_capacity(64),
             account: None,
@@ -256,13 +340,22 @@ impl App {
             fabric_loaders: Vec::new(),
             fabric_mc_versions: Vec::new(),
             mod_browser_open: false,
+            browser_kind: ContentKind::Mods,
             mod_search_query: String::new(),
             mod_search_results: Vec::new(),
             mod_search_loading: false,
             mod_search_error: None,
             mod_search_offset: 0,
+            mod_search_api_offset: 0,
+            mod_search_total: 0,
             mod_installing: None,
             installed_mods: Vec::new(),
+            info_popup: None,
+            categories: Vec::new(),
+            selected_categories: Vec::new(),
+            filters_popup_open: false,
+            filters_scroll: 0,
+            installed_meta: InstanceMeta::default(),
         }
     }
 
@@ -329,15 +422,65 @@ impl App {
         self.paths.version_json(&id).exists() && self.paths.version_jar(&id).exists()
     }
 
-    pub fn current_mods_dir(&self) -> Option<PathBuf> {
+    pub fn current_content_dir(&self, kind: ContentKind) -> Option<PathBuf> {
         let id = self.selected_modded_id()?;
-        Some(self.paths.instances.join(&id).join("mods"))
+        Some(self.paths.instances.join(&id).join(kind.folder()))
+    }
+
+    pub fn visible_categories(&self) -> Vec<&Category> {
+        let kind_key = self.browser_kind.project_type();
+        self.categories
+            .iter()
+            .filter(|c| c.project_type == kind_key)
+            .collect()
+    }
+
+    pub fn toggle_category(&mut self, name: &str) {
+        if let Some(pos) = self.selected_categories.iter().position(|c| c == name) {
+            self.selected_categories.remove(pos);
+        } else {
+            self.selected_categories.push(name.to_string());
+        }
+    }
+
+    pub fn shaders_available(&self) -> bool {
+        self.current_content_dir(ContentKind::Shaders)
+            .map(|p| p.exists())
+            .unwrap_or(false)
+    }
+
+    pub fn current_instance_dir(&self) -> Option<PathBuf> {
+        let id = self.selected_modded_id()?;
+        Some(self.paths.instances.join(&id))
+    }
+
+    pub fn reload_meta(&mut self) {
+        self.installed_meta = match self.current_instance_dir() {
+            Some(d) => InstanceMeta::load(&d),
+            None => InstanceMeta::default(),
+        };
+    }
+
+    pub fn save_meta(&self) {
+        if let Some(d) = self.current_instance_dir() {
+            let _ = std::fs::create_dir_all(&d);
+            self.installed_meta.save(&d);
+        }
+    }
+
+    pub fn is_project_installed(&self, project_id: &str) -> bool {
+        self.installed_meta.is_installed(self.browser_kind, project_id)
     }
 
     pub fn refresh_installed_mods(&mut self) {
-        let Some(dir) = self.current_mods_dir() else {
+        let Some(dir) = self.current_content_dir(self.browser_kind) else {
             self.installed_mods.clear();
             return;
+        };
+        let valid_ext: &[&str] = match self.browser_kind {
+            ContentKind::Mods => &[".jar"],
+            ContentKind::Shaders => &[".zip", ".jar"],
+            ContentKind::ResourcePacks => &[".zip"],
         };
         let mut out: Vec<String> = std::fs::read_dir(&dir)
             .into_iter()
@@ -345,7 +488,7 @@ impl App {
             .filter_map(|e| e.ok())
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
-                if name.ends_with(".jar") {
+                if valid_ext.iter().any(|ext| name.ends_with(ext)) {
                     Some(name)
                 } else {
                     None
@@ -366,7 +509,16 @@ impl App {
         let Some(id) = &self.selected_version else {
             return false;
         };
+        self.is_installed(id)
+    }
+
+    pub fn is_installed(&self, id: &str) -> bool {
         self.paths.version_json(id).exists() && self.paths.version_jar(id).exists()
+    }
+
+    pub fn modded_id_for(&self, mc_id: &str) -> Option<String> {
+        let loader = self.latest_stable_fabric_loader()?;
+        Some(format!("fabric-loader-{loader}-{mc_id}"))
     }
 
     pub fn install_in_progress(&self) -> bool {
@@ -558,10 +710,21 @@ impl App {
                 self.mod_search_loading = true;
                 self.mod_search_error = None;
             }
-            WorkerMsg::ModSearchDone(hits) => {
+            WorkerMsg::ModSearchDone {
+                hits,
+                total,
+                offset,
+                append,
+            } => {
                 self.mod_search_loading = false;
-                self.mod_search_results = hits;
-                self.mod_search_offset = 0;
+                self.mod_search_total = total;
+                self.mod_search_api_offset = offset + hits.len() as u32;
+                if append {
+                    self.mod_search_results.extend(hits);
+                } else {
+                    self.mod_search_results = hits;
+                    self.mod_search_offset = 0;
+                }
             }
             WorkerMsg::ModSearchFailed(e) => {
                 self.mod_search_loading = false;
@@ -571,14 +734,25 @@ impl App {
             WorkerMsg::ModInstallStarted(p) => {
                 self.mod_installing = Some(p);
             }
-            WorkerMsg::ModInstallDone { project: _, filename } => {
+            WorkerMsg::ModInstallDone { project, filename } => {
                 self.mod_installing = None;
-                self.status_message = format!("Installed mod: {filename}");
+                if !project.is_empty() {
+                    let kind = self.browser_kind;
+                    self.installed_meta.record(kind, project, filename.clone());
+                    self.save_meta();
+                }
+                self.status_message = format!("Installed: {filename}");
                 self.refresh_installed_mods();
             }
             WorkerMsg::ModInstallFailed { project: _, error } => {
                 self.mod_installing = None;
                 self.status_message = format!("Mod install failed: {error}");
+            }
+            WorkerMsg::CategoriesLoaded(c) => {
+                self.categories = c;
+            }
+            WorkerMsg::CategoriesFailed(e) => {
+                tracing::warn!("modrinth categories fetch failed: {e}");
             }
         }
     }
@@ -693,6 +867,19 @@ pub fn spawn_article_fetch(
                     index,
                     error: format!("{e:#}"),
                 });
+            }
+        }
+    });
+}
+
+pub fn spawn_modrinth_categories_fetch(client: reqwest::Client, tx: UnboundedSender<WorkerMsg>) {
+    tokio::spawn(async move {
+        match crate::modrinth::fetch_categories(&client).await {
+            Ok(c) => {
+                let _ = tx.send(WorkerMsg::CategoriesLoaded(c));
+            }
+            Err(e) => {
+                let _ = tx.send(WorkerMsg::CategoriesFailed(format!("{e:#}")));
             }
         }
     });

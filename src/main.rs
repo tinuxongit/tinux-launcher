@@ -8,6 +8,7 @@ mod java;
 mod launch;
 mod logging;
 mod manifest;
+mod meta;
 mod modrinth;
 mod news;
 mod paths;
@@ -50,6 +51,7 @@ async fn main() -> Result<()> {
     app::spawn_manifest_fetch(app.client.clone(), worker_tx.clone());
     app::spawn_news_fetch(app.client.clone(), worker_tx.clone());
     app::spawn_fabric_meta_fetch(app.client.clone(), worker_tx.clone());
+    app::spawn_modrinth_categories_fetch(app.client.clone(), worker_tx.clone());
     update::spawn_check(app.client.clone(), worker_tx.clone());
 
     let (mut terminal, original_size) = setup_terminal()?;
@@ -119,11 +121,19 @@ async fn run_loop(
 ) -> Result<()> {
     let mut input = EventStream::new();
     let mut last_tab = app.tab;
+    // The SetSize on startup can land after the first draw, leaving stale
+    // cells from the host terminal's previous content. Force a clear for
+    // the first several frames to paint those over.
+    let mut startup_clears: u8 = 4;
 
     while app.running {
         if app.tab != last_tab {
             app.needs_clear = true;
             last_tab = app.tab;
+        }
+        if startup_clears > 0 {
+            app.needs_clear = true;
+            startup_clears -= 1;
         }
         if app.needs_clear {
             terminal.clear()?;
@@ -228,7 +238,7 @@ fn handle_key(app: &mut App, k: KeyEvent) {
             KeyCode::Esc => app.focus = Focus::None,
             KeyCode::Enter => {
                 app.focus = Focus::None;
-                trigger_mod_search(app);
+                trigger_mod_search(app, false);
             }
             KeyCode::Backspace => {
                 app.mod_search_query.pop();
@@ -248,6 +258,12 @@ fn handle_key(app: &mut App, k: KeyEvent) {
             app.viewing_news = None;
             app.article = None;
             app.article_loading = false;
+        }
+        KeyCode::Esc if app.info_popup.is_some() => {
+            app.info_popup = None;
+        }
+        KeyCode::Esc if app.filters_popup_open => {
+            app.filters_popup_open = false;
         }
         KeyCode::Esc if app.mod_browser_open => {
             app.mod_browser_open = false;
@@ -334,7 +350,9 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
             }
         }
         MouseEventKind::ScrollUp => {
-            if app.mod_browser_open {
+            if app.filters_popup_open {
+                app.filters_scroll = app.filters_scroll.saturating_sub(2);
+            } else if app.mod_browser_open {
                 app.mod_search_offset = app.mod_search_offset.saturating_sub(2);
             } else if app.viewing_news.is_some() {
                 app.article_offset = app.article_offset.saturating_sub(2);
@@ -348,7 +366,9 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
             }
         }
         MouseEventKind::ScrollDown => {
-            if app.mod_browser_open {
+            if app.filters_popup_open {
+                app.filters_scroll = app.filters_scroll.saturating_add(2);
+            } else if app.mod_browser_open {
                 app.mod_search_offset = app.mod_search_offset.saturating_add(2);
             } else if app.viewing_news.is_some() {
                 app.article_offset = app.article_offset.saturating_add(2);
@@ -455,16 +475,17 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             app.filter = app::VersionFilter::Modded;
             app.list_offset = 0;
         }
-        Hit::LoaderFabric => {
-            app.loader = app::ModLoader::Fabric;
-        }
         Hit::BrowseModsButton => {
             if app.selected_modded_installed() {
                 app.mod_browser_open = true;
+                app.browser_kind = app::ContentKind::Mods;
+                app.reload_meta();
                 app.refresh_installed_mods();
+                trigger_mod_search(app, false);
             } else {
-                app.status_message =
-                    "Install the Fabric version first (click Install)".into();
+                app.info_popup = Some(
+                    "You need to install this version first.\n\nClick the Install button to download and set up Fabric, then come back here to browse mods.".to_string(),
+                );
             }
         }
         Hit::CloseModBrowser => {
@@ -478,6 +499,46 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         }
         Hit::RemoveModButton(i) => {
             trigger_mod_remove(app, i);
+        }
+        Hit::BrowserTabMods => switch_browser_tab(app, app::ContentKind::Mods),
+        Hit::BrowserTabShaders => {
+            if app.shaders_available() {
+                switch_browser_tab(app, app::ContentKind::Shaders);
+            } else {
+                app.info_popup = Some(
+                    "Shaders need a shader-loader mod (like Iris or Oculus).\n\nInstall Iris from the Mods tab and launch the game once — that creates the shaderpacks folder, and this tab unlocks.".to_string(),
+                );
+            }
+        }
+        Hit::BrowserTabResourcePacks => switch_browser_tab(app, app::ContentKind::ResourcePacks),
+        Hit::ShowMoreModsButton => {
+            trigger_mod_search(app, true);
+        }
+        Hit::DismissInfoPopup => {
+            app.info_popup = None;
+        }
+        Hit::CategoryChip(i) => {
+            let name = app
+                .visible_categories()
+                .get(i)
+                .map(|c| c.name.clone());
+            if let Some(name) = name {
+                app.toggle_category(&name);
+                trigger_mod_search(app, false);
+            }
+        }
+        Hit::OpenFiltersButton => {
+            app.filters_popup_open = true;
+            app.filters_scroll = 0;
+        }
+        Hit::CloseFiltersPopup => {
+            app.filters_popup_open = false;
+        }
+        Hit::ClearAllFilters => {
+            if !app.selected_categories.is_empty() {
+                app.selected_categories.clear();
+                trigger_mod_search(app, false);
+            }
         }
         Hit::CheckUpdatesButton => {
             app.update_modal_dismissed = false;
@@ -679,6 +740,7 @@ fn trigger_launch(app: &mut App) {
             app.status_message = "Version manifest not loaded yet".into();
             return;
         };
+        config::save_last_played(&mc, app.filter.as_str());
         tokio::spawn(async move {
             worker::do_install_and_launch_fabric(
                 client, paths_clone, manifest, mc, loader, java, opts, tx,
@@ -692,6 +754,7 @@ fn trigger_launch(app: &mut App) {
         app.status_message = "Pick a version first (Versions tab)".into();
         return;
     };
+    config::save_last_played(&entry.id, app.filter.as_str());
     tokio::spawn(async move {
         worker::do_install_and_launch(client, paths_clone, entry, java, opts, tx).await;
     });
@@ -716,20 +779,41 @@ fn trigger_install_update(app: &mut App) {
     }
 }
 
-fn trigger_mod_search(app: &mut App) {
+fn trigger_mod_search(app: &mut App, append: bool) {
     let Some(mc) = app.selected_version.clone() else {
         app.status_message = "Pick a Minecraft version first".into();
         return;
     };
     let query = app.mod_search_query.trim().to_string();
     let loader = app.loader.modrinth_key().to_string();
+    let kind = app.browser_kind;
+    let project_type = kind.project_type().to_string();
+    let include_loader = kind.uses_loader();
+    let offset = if append { app.mod_search_api_offset } else { 0 };
+    let categories = app.selected_categories.clone();
     let client = app.client.clone();
     let tx = app.worker_tx.clone();
     let _ = tx.send(event::WorkerMsg::ModSearchStarted);
     tokio::spawn(async move {
-        match modrinth::search(&client, &query, &mc, &loader).await {
-            Ok(hits) => {
-                let _ = tx.send(event::WorkerMsg::ModSearchDone(hits));
+        match modrinth::search(
+            &client,
+            &query,
+            &mc,
+            &loader,
+            &project_type,
+            include_loader,
+            &categories,
+            offset,
+        )
+        .await
+        {
+            Ok(resp) => {
+                let _ = tx.send(event::WorkerMsg::ModSearchDone {
+                    hits: resp.hits,
+                    total: resp.total_hits,
+                    offset,
+                    append,
+                });
             }
             Err(e) => {
                 let _ = tx.send(event::WorkerMsg::ModSearchFailed(format!("{e:#}")));
@@ -742,26 +826,36 @@ fn trigger_mod_install(app: &mut App, idx: usize) {
     let Some(hit) = app.mod_search_results.get(idx).cloned() else {
         return;
     };
+    if app.is_project_installed(&hit.project_id) {
+        app.status_message = format!("Already installed: {}", hit.title);
+        return;
+    }
     let Some(mc) = app.selected_version.clone() else {
         app.status_message = "Pick a Minecraft version first".into();
         return;
     };
-    let Some(mods_dir) = app.current_mods_dir() else {
+    let kind = app.browser_kind;
+    let Some(dest_dir) = app.current_content_dir(kind) else {
         app.status_message = "Install the Fabric version first".into();
         return;
     };
     if app.mod_installing.is_some() {
-        app.status_message = "A mod install is already running".into();
+        app.status_message = "An install is already running".into();
         return;
     }
-    let loader = app.loader.modrinth_key().to_string();
+    let loader = if kind.uses_loader() {
+        Some(app.loader.modrinth_key().to_string())
+    } else {
+        None
+    };
     let project_id = hit.project_id.clone();
     let client = app.client.clone();
     let tx = app.worker_tx.clone();
     let _ = tx.send(event::WorkerMsg::ModInstallStarted(project_id.clone()));
-    app.status_message = format!("Installing mod: {}", hit.title);
+    app.status_message = format!("Installing: {}", hit.title);
     tokio::spawn(async move {
-        match modrinth::install_latest(&client, &project_id, &mc, &loader, &mods_dir).await {
+        let loader_ref = loader.as_deref();
+        match modrinth::install_latest(&client, &project_id, &mc, loader_ref, &dest_dir).await {
             Ok(filename) => {
                 let _ = tx.send(event::WorkerMsg::ModInstallDone {
                     project: project_id,
@@ -782,10 +876,13 @@ fn trigger_mod_remove(app: &mut App, idx: usize) {
     let Some(filename) = app.installed_mods.get(idx).cloned() else {
         return;
     };
-    let Some(mods_dir) = app.current_mods_dir() else {
+    let Some(dest_dir) = app.current_content_dir(app.browser_kind) else {
         return;
     };
-    let client_dir = mods_dir.clone();
+    let kind = app.browser_kind;
+    app.installed_meta.remove_by_filename(kind, &filename);
+    app.save_meta();
+    let client_dir = dest_dir.clone();
     let tx = app.worker_tx.clone();
     let name_clone = filename.clone();
     tokio::spawn(async move {
@@ -976,6 +1073,19 @@ fn copy_all_logs(app: &mut App) {
         Ok(()) => app.status_message = format!("Copied {n} log lines to clipboard"),
         Err(e) => app.status_message = format!("Clipboard error: {e}"),
     }
+}
+
+fn switch_browser_tab(app: &mut App, kind: app::ContentKind) {
+    app.browser_kind = kind;
+    app.mod_search_query.clear();
+    app.mod_search_results.clear();
+    app.mod_search_offset = 0;
+    app.mod_search_api_offset = 0;
+    app.mod_search_total = 0;
+    app.selected_categories.clear();
+    app.reload_meta();
+    app.refresh_installed_mods();
+    trigger_mod_search(app, false);
 }
 
 fn update_modal_visible(app: &App) -> bool {

@@ -22,8 +22,13 @@ pub struct SearchHit {
 }
 
 #[derive(Debug, Deserialize)]
-struct SearchResponse {
-    hits: Vec<SearchHit>,
+#[allow(dead_code)]
+pub struct SearchResponse {
+    pub hits: Vec<SearchHit>,
+    #[serde(default)]
+    pub total_hits: u32,
+    #[serde(default)]
+    pub offset: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,22 +57,61 @@ struct Hashes {
     sha1: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct Category {
+    pub name: String,
+    pub project_type: String,
+    #[serde(default)]
+    pub header: String,
+}
+
+pub async fn fetch_categories(client: &reqwest::Client) -> Result<Vec<Category>> {
+    let url = format!("{API_BASE}/tag/category");
+    let cats: Vec<Category> = client
+        .get(&url)
+        .send()
+        .await
+        .context("contacting Modrinth categories")?
+        .error_for_status()?
+        .json()
+        .await
+        .context("parsing Modrinth categories")?;
+    Ok(cats)
+}
+
 pub async fn search(
     client: &reqwest::Client,
     query: &str,
     mc_version: &str,
     loader: &str,
-) -> Result<Vec<SearchHit>> {
-    let facets = format!(
-        r#"[["categories:{loader}"],["versions:{mc_version}"],["project_type:mod"]]"#
-    );
+    project_type: &str,
+    include_loader_facet: bool,
+    categories: &[String],
+    offset: u32,
+) -> Result<SearchResponse> {
+    let mut groups: Vec<String> = Vec::new();
+    if include_loader_facet {
+        groups.push(format!(r#"["categories:{loader}"]"#));
+    }
+    if !categories.is_empty() {
+        let or_terms: Vec<String> = categories
+            .iter()
+            .map(|c| format!(r#""categories:{c}""#))
+            .collect();
+        groups.push(format!("[{}]", or_terms.join(",")));
+    }
+    groups.push(format!(r#"["versions:{mc_version}"]"#));
+    groups.push(format!(r#"["project_type:{project_type}"]"#));
+    let facets = format!("[{}]", groups.join(","));
     let url = format!("{API_BASE}/search");
+    let offset_str = offset.to_string();
     let resp: SearchResponse = client
         .get(&url)
         .query(&[
             ("query", query),
             ("facets", &facets),
             ("limit", "20"),
+            ("offset", offset_str.as_str()),
             ("index", "relevance"),
         ])
         .send()
@@ -77,7 +121,7 @@ pub async fn search(
         .json()
         .await
         .context("parsing Modrinth search response")?;
-    Ok(resp.hits)
+    Ok(resp)
 }
 
 /// Download the latest compatible primary file for a project to `mods_dir`.
@@ -86,15 +130,20 @@ pub async fn install_latest(
     client: &reqwest::Client,
     project_id_or_slug: &str,
     mc_version: &str,
-    loader: &str,
+    loader: Option<&str>,
     mods_dir: &Path,
 ) -> Result<String> {
     let url = format!("{API_BASE}/project/{project_id_or_slug}/version");
-    let loaders = format!(r#"["{loader}"]"#);
     let game_versions = format!(r#"["{mc_version}"]"#);
-    let versions: Vec<ProjectVersion> = client
+    let mut req = client
         .get(&url)
-        .query(&[("loaders", loaders.as_str()), ("game_versions", game_versions.as_str())])
+        .query(&[("game_versions", game_versions.as_str())]);
+    let loaders_owned;
+    if let Some(loader) = loader {
+        loaders_owned = format!(r#"["{loader}"]"#);
+        req = req.query(&[("loaders", loaders_owned.as_str())]);
+    }
+    let versions: Vec<ProjectVersion> = req
         .send()
         .await
         .context("contacting Modrinth versions endpoint")?
@@ -107,7 +156,12 @@ pub async fn install_latest(
         .iter()
         .find(|v| v.version_type == "release")
         .or_else(|| versions.first())
-        .ok_or_else(|| anyhow!("no compatible Modrinth version found for {mc_version}/{loader}"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "no compatible Modrinth version found for {mc_version}{}",
+                loader.map(|l| format!("/{l}")).unwrap_or_default()
+            )
+        })?;
 
     let file = chosen
         .files

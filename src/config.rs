@@ -9,6 +9,10 @@ pub struct Config {
     pub offline_name: Option<String>,
     #[serde(default)]
     pub offline_skin_url: Option<String>,
+    #[serde(default)]
+    pub last_played_version: Option<String>,
+    #[serde(default)]
+    pub last_filter: Option<String>,
 }
 
 impl Config {
@@ -31,6 +35,13 @@ pub fn save_offline_name(name: &str) {
 
 pub fn save_offline_skin_url(url: &str) {
     update(|c| c.offline_skin_url = Some(url.to_string()));
+}
+
+pub fn save_last_played(version: &str, filter: &str) {
+    update(|c| {
+        c.last_played_version = Some(version.to_string());
+        c.last_filter = Some(filter.to_string());
+    });
 }
 
 fn update(f: impl FnOnce(&mut Config)) {
