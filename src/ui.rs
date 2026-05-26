@@ -317,40 +317,27 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(inner);
 
-    let filters = Layout::default()
+    let filter_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(14),
-            Constraint::Length(2),
-            Constraint::Length(14),
-            Constraint::Length(2),
-            Constraint::Length(12),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(48), Constraint::Min(0)])
         .split(rows[0]);
-    draw_toggle(
+    draw_segmented(
         f,
         app,
-        filters[0],
-        "Releases",
-        Hit::FilterReleases,
-        app.filter == VersionFilter::Releases,
-    );
-    draw_toggle(
-        f,
-        app,
-        filters[2],
-        "Snapshots",
-        Hit::FilterSnapshots,
-        app.filter == VersionFilter::Snapshots,
-    );
-    draw_toggle(
-        f,
-        app,
-        filters[4],
-        "Older",
-        Hit::FilterOld,
-        app.filter == VersionFilter::Old,
+        filter_cols[0],
+        &[
+            (
+                "Releases",
+                Hit::FilterReleases,
+                app.filter == VersionFilter::Releases,
+            ),
+            (
+                "Snapshots",
+                Hit::FilterSnapshots,
+                app.filter == VersionFilter::Snapshots,
+            ),
+            ("Older", Hit::FilterOld, app.filter == VersionFilter::Old),
+        ],
     );
 
     let list_area = rows[2];
@@ -444,23 +431,24 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
 
     let online = app.account_mode == AccountMode::Online;
 
-    // Mode toggle row
+    // Mode segmented toggle.
     f.render_widget(
         Paragraph::new(Span::styled("Mode:", theme::dim())).style(theme::base()),
         Rect::new(inner.x, inner.y, inner.width, 1),
     );
-    let toggle_row = Rect::new(inner.x, inner.y + 1, inner.width, BUTTON_H);
     let toggle_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(16),
-            Constraint::Length(2),
-            Constraint::Length(16),
-            Constraint::Min(0),
-        ])
-        .split(toggle_row);
-    draw_toggle(f, app, toggle_cols[0], "Offline", Hit::ModeOffline, !online);
-    draw_toggle(f, app, toggle_cols[2], "Online", Hit::ModeOnline, online);
+        .constraints([Constraint::Length(34), Constraint::Min(0)])
+        .split(Rect::new(inner.x, inner.y + 1, inner.width, BUTTON_H));
+    draw_segmented(
+        f,
+        app,
+        toggle_cols[0],
+        &[
+            ("Offline", Hit::ModeOffline, !online),
+            ("Online", Hit::ModeOnline, online),
+        ],
+    );
 
     let mut y = inner.y + 1 + BUTTON_H + 1;
     let row = |yy: u16| Rect::new(inner.x, yy, inner.width, 1);
@@ -534,51 +522,72 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn draw_toggle(
+fn draw_segmented(
     f: &mut Frame,
     app: &mut App,
     rect: Rect,
-    label: &str,
-    hit: Hit,
-    active: bool,
+    items: &[(&str, Hit, bool)],
 ) {
-    let hovered = app.hover == Some(hit);
-    let (fg, border_fg) = if active {
-        (theme::ACCENT_HI, theme::ACCENT)
-    } else if hovered {
-        (theme::FG, theme::FG_DIM)
-    } else {
-        (theme::FG_DIM, theme::BORDER)
-    };
-
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_fg).bg(theme::BG));
+        .border_style(Style::default().fg(theme::BORDER).bg(theme::BG));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
+    let n = items.len() as u16;
+    if n == 0 || inner.height == 0 || inner.width == 0 {
+        return;
+    }
     let mid = inner.height / 2;
-    let modifier = if active {
-        Modifier::BOLD
-    } else {
-        Modifier::empty()
-    };
-    let styled = Span::styled(
-        label,
-        Style::default().fg(fg).bg(theme::BG).add_modifier(modifier),
-    );
-    let lines: Vec<Line> = (0..inner.height)
-        .map(|i| if i == mid { Line::from(vec![styled.clone()]) } else { Line::from("") })
-        .collect();
-    f.render_widget(
-        Paragraph::new(lines)
-            .style(theme::base())
-            .alignment(Alignment::Center),
-        inner,
-    );
 
-    app.click_regions.push((rect, hit));
+    // Vertical dividers between sections.
+    for i in 1..n {
+        let div_x = inner.x + inner.width * i / n;
+        let div_lines: Vec<Line> = (0..inner.height).map(|_| Line::from("│")).collect();
+        f.render_widget(
+            Paragraph::new(div_lines).style(Style::default().fg(theme::BORDER).bg(theme::BG)),
+            Rect::new(div_x, inner.y, 1, inner.height),
+        );
+    }
+
+    for (i, &(label, hit, active)) in items.iter().enumerate() {
+        let i = i as u16;
+        let seg_x = inner.x + inner.width * i / n;
+        let seg_end = inner.x + inner.width * (i + 1) / n;
+        let seg_w = seg_end - seg_x;
+        let click_rect = Rect::new(seg_x, inner.y, seg_w, inner.height);
+
+        // Leave a 1-col gutter for the left-side divider (except on the first segment).
+        let label_x = if i > 0 { seg_x + 1 } else { seg_x };
+        let label_w = if i > 0 { seg_w - 1 } else { seg_w };
+        let label_rect = Rect::new(label_x, inner.y, label_w, inner.height);
+
+        let hovered = app.hover == Some(hit);
+        let fg = if active {
+            theme::ACCENT_HI
+        } else if hovered {
+            theme::FG
+        } else {
+            theme::FG_DIM
+        };
+        let modifier = if active { Modifier::BOLD } else { Modifier::empty() };
+        let styled = Span::styled(
+            label,
+            Style::default().fg(fg).bg(theme::BG).add_modifier(modifier),
+        );
+        let lines: Vec<Line> = (0..label_rect.height)
+            .map(|y| if y == mid { Line::from(vec![styled.clone()]) } else { Line::from("") })
+            .collect();
+        f.render_widget(
+            Paragraph::new(lines)
+                .style(theme::base())
+                .alignment(Alignment::Center),
+            label_rect,
+        );
+
+        app.click_regions.push((click_rect, hit));
+    }
 }
 
 fn draw_logs(f: &mut Frame, app: &mut App, area: Rect) {
