@@ -30,6 +30,7 @@ pub enum Hit {
     NewsItem(usize),
     CloseArticle,
     OpenArticleExternal,
+    OpenAllArticles,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

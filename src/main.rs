@@ -322,6 +322,10 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
                 }
             }
         }
+        Hit::OpenAllArticles => {
+            let _ = webbrowser::open("https://www.minecraft.net/en-us/articles");
+            app.status_message = "Opened minecraft.net/articles".into();
+        }
     }
 }
 

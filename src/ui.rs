@@ -234,28 +234,48 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     draw_progress(f, app, rows[5]);
-    draw_news_header(f, rows[7]);
+    draw_news_header(f, app, rows[7]);
     draw_news_list(f, app, rows[8]);
 }
 
-fn draw_news_header(f: &mut Frame, area: Rect) {
+fn draw_news_header(f: &mut Frame, app: &mut App, area: Rect) {
     let title = " Latest news ";
-    let mut s = String::new();
-    s.push_str(title);
-    while s.chars().count() < area.width as usize {
-        s.push('─');
-    }
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(title, theme::accent_bold()),
-            Span::styled(
-                "─".repeat(area.width as usize - title.chars().count()),
-                Style::default().fg(theme::BORDER).bg(theme::BG),
-            ),
-        ]))
-        .style(theme::base()),
-        area,
+    let link_text = "See all on minecraft.net ↗ ";
+    let title_w = title.chars().count();
+    let link_w = link_text.chars().count();
+    let area_w = area.width as usize;
+    let dash_w = area_w.saturating_sub(title_w + link_w);
+
+    let hovered = app.hover == Some(Hit::OpenAllArticles);
+    let link_style = if hovered {
+        Style::default()
+            .fg(theme::ACCENT_HI)
+            .bg(theme::BG)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
+        Style::default()
+            .fg(theme::ACCENT)
+            .bg(theme::BG)
+            .add_modifier(Modifier::UNDERLINED)
+    };
+
+    let line = Line::from(vec![
+        Span::styled(title, theme::accent_bold()),
+        Span::styled(
+            "─".repeat(dash_w),
+            Style::default().fg(theme::BORDER).bg(theme::BG),
+        ),
+        Span::styled(link_text, link_style),
+    ]);
+    f.render_widget(Paragraph::new(line).style(theme::base()), area);
+
+    let link_rect = Rect::new(
+        area.x + (title_w + dash_w) as u16,
+        area.y,
+        link_w as u16,
+        1,
     );
+    app.click_regions.push((link_rect, Hit::OpenAllArticles));
 }
 
 fn draw_news_list(f: &mut Frame, app: &mut App, area: Rect) {
