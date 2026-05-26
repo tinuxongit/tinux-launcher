@@ -31,6 +31,9 @@ use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
 use std::io::{self, Stdout};
 use tokio::sync::mpsc::unbounded_channel;
 
+const TERMINAL_COLS: u16 = 120;
+const TERMINAL_ROWS: u16 = 38;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let paths = paths::Paths::resolve()?;
@@ -44,10 +47,10 @@ async fn main() -> Result<()> {
     app::spawn_manifest_fetch(app.client.clone(), worker_tx.clone());
     app::spawn_news_fetch(app.client.clone(), worker_tx.clone());
 
-    let mut terminal = setup_terminal()?;
+    let (mut terminal, original_size) = setup_terminal()?;
     terminal.clear()?;
     let result = run_loop(&mut terminal, &mut app, &mut worker_rx).await;
-    restore_terminal(&mut terminal)?;
+    restore_terminal(&mut terminal, original_size)?;
 
     if let Err(e) = &result {
         eprintln!("error: {e:#}");
@@ -55,27 +58,27 @@ async fn main() -> Result<()> {
     result
 }
 
-fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, Option<(u16, u16)>)> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    // Ask the host terminal for a comfortable size if it's smaller.
-    // Supported by Windows Terminal, iTerm2, kitty, WezTerm, xterm; silently ignored
-    // by Alacritty and others — no harm if the request bounces.
-    if let Ok((cols, rows)) = crossterm::terminal::size() {
-        let want_cols = cols.max(120);
-        let want_rows = rows.max(38);
-        if want_cols != cols || want_rows != rows {
-            let _ = execute!(stdout, crossterm::terminal::SetSize(want_cols, want_rows));
-        }
-    }
+    // Keep the TUI at a predictable size while it is running.
+    // Some terminal hosts ignore resize requests, so this is best-effort.
+    let original_size = crossterm::terminal::size().ok();
+    enforce_terminal_size(&mut stdout);
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
-    Ok(terminal)
+    Ok((terminal, original_size))
 }
 
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+fn restore_terminal(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    original_size: Option<(u16, u16)>,
+) -> Result<()> {
     disable_raw_mode()?;
+    if let Some((cols, rows)) = original_size {
+        let _ = execute!(terminal.backend_mut(), crossterm::terminal::SetSize(cols, rows));
+    }
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
@@ -83,6 +86,25 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result
     )?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+fn enforce_terminal_size(stdout: &mut Stdout) {
+    if crossterm::terminal::size().ok() != Some((TERMINAL_COLS, TERMINAL_ROWS)) {
+        let _ = execute!(
+            stdout,
+            crossterm::terminal::SetSize(TERMINAL_COLS, TERMINAL_ROWS)
+        );
+    }
+}
+
+fn enforce_terminal_backend_size(terminal: &mut Terminal<CrosstermBackend<Stdout>>) {
+    if crossterm::terminal::size().ok() != Some((TERMINAL_COLS, TERMINAL_ROWS)) {
+        let _ = execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::SetSize(TERMINAL_COLS, TERMINAL_ROWS)
+        );
+        let _ = terminal.clear();
+    }
 }
 
 async fn run_loop(
@@ -109,7 +131,7 @@ async fn run_loop(
                 match ev {
                     Some(Ok(Event::Key(k))) => handle_key(app, k),
                     Some(Ok(Event::Mouse(m))) => handle_mouse(app, m),
-                    Some(Ok(Event::Resize(_, _))) => {}
+                    Some(Ok(Event::Resize(_, _))) => enforce_terminal_backend_size(terminal),
                     Some(Ok(_)) => {}
                     Some(Err(e)) => {
                         tracing::warn!("event stream error: {e}");
