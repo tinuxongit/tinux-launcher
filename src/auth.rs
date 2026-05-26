@@ -3,11 +3,12 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use url::Url;
 
 const BIND_HOST: &str = "127.0.0.1";
-const REDIRECT_HOST: &str = BIND_HOST;
+const BIND_HOST_V6: &str = "::1";
+const REDIRECT_HOST: &str = "localhost";
 const AUTH_BASE: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
 const XBOX_AUTH: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_AUTH: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
@@ -46,8 +47,8 @@ pub fn client_id() -> Option<String> {
 pub async fn interactive_login() -> Result<Account> {
     let client_id = client_id().ok_or_else(|| anyhow!("no client id configured"))?;
 
-    let listener = TcpListener::bind((BIND_HOST, 0u16)).await?;
-    let port = listener.local_addr()?.port();
+    let listeners = CallbackListeners::bind().await?;
+    let port = listeners.port;
     let redirect_uri = format!("http://{REDIRECT_HOST}:{port}/callback");
 
     let (verifier, challenge) = pkce_pair();
@@ -68,7 +69,7 @@ pub async fn interactive_login() -> Result<Account> {
 
     webbrowser::open(auth_url.as_str()).context("opening browser for sign-in")?;
 
-    let code = wait_for_redirect(listener, &state).await?;
+    let code = wait_for_redirect(listeners, &state).await?;
 
     let http = reqwest::Client::builder()
         .user_agent("tinux-launcher/0.1")
@@ -225,8 +226,38 @@ fn random_state() -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
-async fn wait_for_redirect(listener: TcpListener, expected_state: &str) -> Result<String> {
+struct CallbackListeners {
+    port: u16,
+    ipv4: TcpListener,
+    ipv6: Option<TcpListener>,
+}
+
+impl CallbackListeners {
+    async fn bind() -> Result<Self> {
+        let ipv4 = TcpListener::bind((BIND_HOST, 0u16)).await?;
+        let port = ipv4.local_addr()?.port();
+        let ipv6 = TcpListener::bind((BIND_HOST_V6, port)).await.ok();
+        Ok(Self { port, ipv4, ipv6 })
+    }
+}
+
+async fn wait_for_redirect(listeners: CallbackListeners, expected_state: &str) -> Result<String> {
+    if let Some(ipv6) = listeners.ipv6 {
+        tokio::select! {
+            res = accept_redirect(listeners.ipv4, expected_state) => res,
+            res = accept_redirect(ipv6, expected_state) => res,
+        }
+    } else {
+        accept_redirect(listeners.ipv4, expected_state).await
+    }
+}
+
+async fn accept_redirect(listener: TcpListener, expected_state: &str) -> Result<String> {
     let (mut stream, _peer) = listener.accept().await?;
+    read_redirect(&mut stream, expected_state).await
+}
+
+async fn read_redirect(stream: &mut TcpStream, expected_state: &str) -> Result<String> {
     let mut buf = vec![0u8; 4096];
     let n = stream.read(&mut buf).await?;
     let req = String::from_utf8_lossy(&buf[..n]);
