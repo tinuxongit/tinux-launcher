@@ -426,6 +426,11 @@ async fn mc_login(http: &reqwest::Client, uhs: &str, xsts_token: &str) -> Result
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
+        if status == reqwest::StatusCode::FORBIDDEN && body.contains("Invalid app registration") {
+            bail!(
+                "Minecraft rejected this Microsoft app registration. The Azure client ID must be approved for Minecraft/Xbox authentication; see https://aka.ms/AppRegInfo."
+            );
+        }
         bail!("Minecraft login HTTP {status}: {body}");
     }
     let r: McLoginResp = resp.json().await?;
