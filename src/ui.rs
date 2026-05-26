@@ -310,44 +310,50 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(BUTTON_H),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
         .split(inner);
 
     let filters = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(13),
-            Constraint::Length(13),
-            Constraint::Length(13),
+            Constraint::Length(14),
+            Constraint::Length(2),
+            Constraint::Length(14),
+            Constraint::Length(2),
+            Constraint::Length(12),
             Constraint::Min(0),
         ])
         .split(rows[0]);
-    draw_filter(
+    draw_toggle(
         f,
         app,
         filters[0],
-        " Releases ",
+        "Releases",
         Hit::FilterReleases,
-        VersionFilter::Releases,
+        app.filter == VersionFilter::Releases,
     );
-    draw_filter(
-        f,
-        app,
-        filters[1],
-        " Snapshots ",
-        Hit::FilterSnapshots,
-        VersionFilter::Snapshots,
-    );
-    draw_filter(
+    draw_toggle(
         f,
         app,
         filters[2],
-        "  Older  ",
+        "Snapshots",
+        Hit::FilterSnapshots,
+        app.filter == VersionFilter::Snapshots,
+    );
+    draw_toggle(
+        f,
+        app,
+        filters[4],
+        "Older",
         Hit::FilterOld,
-        VersionFilter::Old,
+        app.filter == VersionFilter::Old,
     );
 
-    let list_area = rows[1];
+    let list_area = rows[2];
     let list_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -420,26 +426,6 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
             .end_symbol(None);
         f.render_stateful_widget(sb, sb_rect, &mut sb_state);
     }
-}
-
-fn draw_filter(
-    f: &mut Frame,
-    app: &mut App,
-    rect: Rect,
-    label: &str,
-    hit: Hit,
-    filter: VersionFilter,
-) {
-    let active = app.filter == filter;
-    let style = if active {
-        theme::button_hover()
-    } else if app.hover == Some(hit) {
-        theme::button_idle().add_modifier(Modifier::BOLD)
-    } else {
-        theme::button_idle()
-    };
-    f.render_widget(Paragraph::new(label).style(style), rect);
-    app.click_regions.push((rect, hit));
 }
 
 fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {

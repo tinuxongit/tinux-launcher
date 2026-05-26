@@ -246,7 +246,6 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             let visible = app.visible_versions();
             if let Some(v) = visible.get(i) {
                 app.selected_version = Some(v.id.clone());
-                app.tab = Tab::Play;
             }
         }
         Hit::LaunchButton => trigger_launch(app),
@@ -259,7 +258,6 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         }
         Hit::OfflineNameField => {
             app.focus = Focus::OfflineName;
-            app.tab = Tab::Play;
         }
         Hit::LogRow(i) => {
             if extend {
