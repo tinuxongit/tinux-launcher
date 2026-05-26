@@ -259,12 +259,14 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_news_header(f: &mut Frame, app: &mut App, area: Rect) {
     let grip_hovered = app.hover == Some(Hit::NewsSplitter) || app.dragging_split;
     let grip_char = if grip_hovered { "⇕ " } else { "↕ " };
-    let title_text = format!("{grip_char}Latest news ");
-    let link_text = "See all on minecraft.net ↗ ";
+    let title_text = format!("{grip_char}Release notes ");
+    let link_text = "See all on minecraft.net ↗";
+    let right_pad = "  ";
     let title_w = title_text.chars().count();
     let link_w = link_text.chars().count();
+    let pad_w = right_pad.chars().count();
     let area_w = area.width as usize;
-    let dash_w = area_w.saturating_sub(title_w + link_w);
+    let dash_w = area_w.saturating_sub(title_w + link_w + pad_w);
 
     let title_style = if grip_hovered {
         Style::default()
@@ -282,10 +284,7 @@ fn draw_news_header(f: &mut Frame, app: &mut App, area: Rect) {
             .bg(theme::BG)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else {
-        Style::default()
-            .fg(theme::ACCENT)
-            .bg(theme::BG)
-            .add_modifier(Modifier::UNDERLINED)
+        Style::default().fg(theme::ACCENT).bg(theme::BG)
     };
 
     let dash_style = if grip_hovered {
@@ -298,10 +297,10 @@ fn draw_news_header(f: &mut Frame, app: &mut App, area: Rect) {
         Span::styled(title_text, title_style),
         Span::styled("─".repeat(dash_w), dash_style),
         Span::styled(link_text, link_style),
+        Span::styled(right_pad, theme::base()),
     ]);
     f.render_widget(Paragraph::new(line).style(theme::base()), area);
 
-    // Drag grip: the title + dashes (the whole row minus the link).
     let grip_rect = Rect::new(area.x, area.y, (title_w + dash_w) as u16, 1);
     app.click_regions.push((grip_rect, Hit::NewsSplitter));
 

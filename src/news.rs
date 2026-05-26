@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-const NEWS_URL: &str = "https://launchercontent.mojang.com/v2/news.json";
 const PATCH_URL: &str = "https://launchercontent.mojang.com/v2/javaPatchNotes.json";
 const CONTENT_BASE: &str = "https://launchercontent.mojang.com/v2/";
 
@@ -23,27 +22,6 @@ impl NewsEntry {
 }
 
 #[derive(Debug, Deserialize)]
-struct RawNewsResponse {
-    entries: Vec<RawNewsEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawNewsEntry {
-    #[serde(default)]
-    title: String,
-    #[serde(default)]
-    date: String,
-    #[serde(default)]
-    category: String,
-    #[serde(default)]
-    text: String,
-    #[serde(default, rename = "readMoreLink")]
-    read_more_link: String,
-    #[serde(default, rename = "articleBody")]
-    article_body: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct RawPatchResponse {
     entries: Vec<RawPatchEntry>,
 }
@@ -61,46 +39,6 @@ struct RawPatchEntry {
 }
 
 pub async fn fetch(client: &reqwest::Client) -> Result<Vec<NewsEntry>> {
-    let (news, patches) = tokio::join!(
-        fetch_news(client),
-        fetch_patches(client),
-    );
-    let mut all: Vec<NewsEntry> = Vec::new();
-    if let Ok(mut n) = news {
-        all.append(&mut n);
-    }
-    if let Ok(mut p) = patches {
-        all.append(&mut p);
-    }
-    all.sort_by(|a, b| b.date.cmp(&a.date));
-    Ok(all)
-}
-
-async fn fetch_news(client: &reqwest::Client) -> Result<Vec<NewsEntry>> {
-    let resp: RawNewsResponse = client
-        .get(NEWS_URL)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await
-        .context("parsing news.json")?;
-    Ok(resp
-        .entries
-        .into_iter()
-        .map(|e| NewsEntry {
-            title: e.title,
-            date: e.date,
-            kind: e.category,
-            short_text: e.text,
-            read_more_link: e.read_more_link,
-            content_path: String::new(),
-            article_body: e.article_body,
-        })
-        .collect())
-}
-
-async fn fetch_patches(client: &reqwest::Client) -> Result<Vec<NewsEntry>> {
     let resp: RawPatchResponse = client
         .get(PATCH_URL)
         .send()
@@ -109,7 +47,7 @@ async fn fetch_patches(client: &reqwest::Client) -> Result<Vec<NewsEntry>> {
         .json()
         .await
         .context("parsing patch notes")?;
-    Ok(resp
+    let mut entries: Vec<NewsEntry> = resp
         .entries
         .into_iter()
         .map(|e| NewsEntry {
@@ -121,7 +59,9 @@ async fn fetch_patches(client: &reqwest::Client) -> Result<Vec<NewsEntry>> {
             content_path: e.content_path,
             article_body: String::new(),
         })
-        .collect())
+        .collect();
+    entries.sort_by(|a, b| b.date.cmp(&a.date));
+    Ok(entries)
 }
 
 #[derive(Debug, Clone)]
