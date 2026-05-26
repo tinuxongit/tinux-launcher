@@ -57,13 +57,6 @@ struct AssetObject {
     size: u64,
 }
 
-pub fn plan_complete(plan: &InstallPlan) -> bool {
-    plan.jobs.iter().all(|j| match std::fs::metadata(&j.dest) {
-        Ok(m) => m.len() == j.size,
-        Err(_) => false,
-    })
-}
-
 pub async fn install_version(
     client: &reqwest::Client,
     paths: &Paths,
@@ -76,7 +69,7 @@ pub async fn install_version(
     Ok(plan)
 }
 
-pub async fn build_plan(
+async fn build_plan(
     client: &reqwest::Client,
     paths: &Paths,
     version_id: &str,
