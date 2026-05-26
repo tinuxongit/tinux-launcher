@@ -1,5 +1,5 @@
-use crate::download::{build_plan, install_version, plan_complete, run_jobs, ProgressEvent};
-use crate::event::WorkerMsg;
+use crate::download::{install_version, ProgressEvent};
+use crate::event::{InstallKind, WorkerMsg};
 use crate::java::JavaInstall;
 use crate::launch::{self, LaunchOptions};
 use crate::manifest::ManifestVersion;
@@ -19,6 +19,7 @@ pub async fn do_install(
     tokio::spawn(async move {
         while let Some(ev) = prog_rx.recv().await {
             let _ = app_tx.send(WorkerMsg::InstallProgress {
+                kind: InstallKind::Install,
                 done: ev.done,
                 total: ev.total,
                 what: ev.what,
@@ -48,8 +49,26 @@ pub async fn do_install_and_launch(
     tx: UnboundedSender<WorkerMsg>,
 ) {
     let version_id = entry.id.clone();
+    let kind = if paths.version_jar(&version_id).exists() {
+        InstallKind::Verify
+    } else {
+        InstallKind::Install
+    };
 
-    let plan = match build_plan(&client, &paths, &entry.id, &entry.url).await {
+    let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
+    let app_tx = tx.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = prog_rx.recv().await {
+            let _ = app_tx.send(WorkerMsg::InstallProgress {
+                kind,
+                done: ev.done,
+                total: ev.total,
+                what: ev.what,
+            });
+        }
+    });
+
+    let plan = match install_version(&client, &paths, &entry.id, &entry.url, &prog_tx).await {
         Ok(p) => p,
         Err(e) => {
             let _ = tx.send(WorkerMsg::InstallFailed {
@@ -59,28 +78,7 @@ pub async fn do_install_and_launch(
             return;
         }
     };
-
-    if !plan_complete(&plan) {
-        let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
-        let app_tx = tx.clone();
-        tokio::spawn(async move {
-            while let Some(ev) = prog_rx.recv().await {
-                let _ = app_tx.send(WorkerMsg::InstallProgress {
-                    done: ev.done,
-                    total: ev.total,
-                    what: ev.what,
-                });
-            }
-        });
-        if let Err(e) = run_jobs(&client, &plan.jobs, &prog_tx).await {
-            let _ = tx.send(WorkerMsg::InstallFailed {
-                version: version_id,
-                error: format!("{e:#}"),
-            });
-            return;
-        }
-        let _ = tx.send(WorkerMsg::InstallDone(version_id.clone()));
-    }
+    let _ = tx.send(WorkerMsg::InstallDone(version_id.clone()));
 
     let details_path = paths.version_json(&version_id);
     let details: VersionDetails = match tokio::fs::read(&details_path).await {

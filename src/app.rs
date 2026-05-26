@@ -1,5 +1,5 @@
 use crate::auth::Account;
-use crate::event::{Hit, Tab, WorkerMsg};
+use crate::event::{Hit, InstallKind, Tab, WorkerMsg};
 use crate::java::{self, JavaInstall};
 use crate::manifest::{self, ManifestVersion, VersionKind, VersionManifest};
 use crate::news::{self, NewsEntry};
@@ -20,6 +20,7 @@ pub enum VersionFilter {
 
 #[derive(Debug)]
 pub struct InstallState {
+    pub kind: InstallKind,
     pub done: u64,
     pub total: u64,
     pub what: String,
@@ -213,8 +214,8 @@ impl App {
                 self.auth_error = Some(e.clone());
                 self.status_message = format!("Sign-in failed: {e}");
             }
-            WorkerMsg::InstallProgress { done, total, what } => {
-                self.install = Some(InstallState { done, total, what });
+            WorkerMsg::InstallProgress { kind, done, total, what } => {
+                self.install = Some(InstallState { kind, done, total, what });
             }
             WorkerMsg::InstallDone(v) => {
                 self.install = None;

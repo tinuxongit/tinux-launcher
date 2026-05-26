@@ -3,6 +3,12 @@ use crate::manifest::VersionManifest;
 use crate::news::NewsEntry;
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallKind {
+    Install,
+    Verify,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Hit {
     Tab(Tab),
@@ -53,6 +59,7 @@ pub enum WorkerMsg {
     AuthSucceeded(Account),
     AuthFailed(String),
     InstallProgress {
+        kind: InstallKind,
         done: u64,
         total: u64,
         what: String,

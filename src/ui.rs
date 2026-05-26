@@ -1,5 +1,5 @@
 use crate::app::{AccountMode, App, Focus, InstallState, LaunchState, VersionFilter};
-use crate::event::{Hit, Tab};
+use crate::event::{Hit, InstallKind, Tab};
 use crate::theme;
 use ratatui::{
     buffer::Buffer,
@@ -214,8 +214,12 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(22), Constraint::Min(0)])
         .split(rows[3]);
-    if app.install_in_progress() {
-        draw_disabled_button(f, btn_cols[0], "Installing...");
+    if let Some(state) = &app.install {
+        let label = match state.kind {
+            InstallKind::Install => "Installing...",
+            InstallKind::Verify => "Verifying...",
+        };
+        draw_disabled_button(f, btn_cols[0], label);
     } else if app.launch_state == LaunchState::Running {
         draw_disabled_button(f, btn_cols[0], "Running");
     } else if app.selected_is_installed() {
