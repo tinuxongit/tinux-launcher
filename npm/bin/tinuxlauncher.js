@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { spawnSync } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 
 const GITHUB_SPEC = "github:tinuxongit/tinux-launcher";
@@ -38,6 +39,14 @@ if (args[0] === "--version" || args[0] === "-v") {
   process.exit(0);
 }
 
+if (!fs.existsSync(bin)) {
+  console.error("Tinux Launcher binary is missing; building it now...");
+  const built = buildRelease();
+  if (!built) {
+    process.exit(1);
+  }
+}
+
 const result = spawnSync(bin, args, {
   stdio: "inherit",
   windowsHide: false,
@@ -50,6 +59,25 @@ if (result.error) {
 }
 
 process.exit(result.status ?? 0);
+
+function buildRelease() {
+  const cargo = process.platform === "win32" ? "cargo.exe" : "cargo";
+  const result = spawnSync(cargo, ["build", "--release"], {
+    cwd: root,
+    stdio: "inherit",
+    windowsHide: false,
+  });
+  if (result.error) {
+    console.error(`Failed to build Tinux Launcher: ${result.error.message}`);
+    console.error("Install Rust from https://rustup.rs, then run tinuxlauncher again.");
+    return false;
+  }
+  if (result.status !== 0) {
+    console.error("Failed to build Tinux Launcher.");
+    return false;
+  }
+  return true;
+}
 
 function findPackageManager() {
   for (const manager of [
