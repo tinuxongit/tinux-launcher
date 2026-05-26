@@ -216,6 +216,8 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         .split(rows[3]);
     if app.install_in_progress() {
         draw_disabled_button(f, btn_cols[0], "Installing...");
+    } else if app.launch_state == LaunchState::Running {
+        draw_disabled_button(f, btn_cols[0], "Running");
     } else if app.selected_is_installed() {
         draw_button(f, app, btn_cols[0], "▶  Launch", Hit::LaunchButton, true);
     } else {

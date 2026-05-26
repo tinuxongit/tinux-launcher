@@ -1,4 +1,4 @@
-use crate::download::{install_version, ProgressEvent};
+use crate::download::{build_plan, install_version, plan_complete, run_jobs, ProgressEvent};
 use crate::event::WorkerMsg;
 use crate::java::JavaInstall;
 use crate::launch::{self, LaunchOptions};
@@ -48,19 +48,8 @@ pub async fn do_install_and_launch(
     tx: UnboundedSender<WorkerMsg>,
 ) {
     let version_id = entry.id.clone();
-    let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
-    let app_tx = tx.clone();
-    tokio::spawn(async move {
-        while let Some(ev) = prog_rx.recv().await {
-            let _ = app_tx.send(WorkerMsg::InstallProgress {
-                done: ev.done,
-                total: ev.total,
-                what: ev.what,
-            });
-        }
-    });
 
-    let plan = match install_version(&client, &paths, &entry.id, &entry.url, &prog_tx).await {
+    let plan = match build_plan(&client, &paths, &entry.id, &entry.url).await {
         Ok(p) => p,
         Err(e) => {
             let _ = tx.send(WorkerMsg::InstallFailed {
@@ -70,7 +59,28 @@ pub async fn do_install_and_launch(
             return;
         }
     };
-    let _ = tx.send(WorkerMsg::InstallDone(version_id.clone()));
+
+    if !plan_complete(&plan) {
+        let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
+        let app_tx = tx.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = prog_rx.recv().await {
+                let _ = app_tx.send(WorkerMsg::InstallProgress {
+                    done: ev.done,
+                    total: ev.total,
+                    what: ev.what,
+                });
+            }
+        });
+        if let Err(e) = run_jobs(&client, &plan.jobs, &prog_tx).await {
+            let _ = tx.send(WorkerMsg::InstallFailed {
+                version: version_id,
+                error: format!("{e:#}"),
+            });
+            return;
+        }
+        let _ = tx.send(WorkerMsg::InstallDone(version_id.clone()));
+    }
 
     let details_path = paths.version_json(&version_id);
     let details: VersionDetails = match tokio::fs::read(&details_path).await {

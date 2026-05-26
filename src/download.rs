@@ -57,6 +57,13 @@ struct AssetObject {
     size: u64,
 }
 
+pub fn plan_complete(plan: &InstallPlan) -> bool {
+    plan.jobs.iter().all(|j| match std::fs::metadata(&j.dest) {
+        Ok(m) => m.len() == j.size,
+        Err(_) => false,
+    })
+}
+
 pub async fn install_version(
     client: &reqwest::Client,
     paths: &Paths,
@@ -64,7 +71,17 @@ pub async fn install_version(
     version_url: &str,
     progress: &UnboundedSender<ProgressEvent>,
 ) -> Result<InstallPlan> {
-    // 1. fetch + cache version json
+    let plan = build_plan(client, paths, version_id, version_url).await?;
+    run_jobs(client, &plan.jobs, progress).await?;
+    Ok(plan)
+}
+
+pub async fn build_plan(
+    client: &reqwest::Client,
+    paths: &Paths,
+    version_id: &str,
+    version_url: &str,
+) -> Result<InstallPlan> {
     let vj_path = paths.version_json(version_id);
     ensure_parent(&vj_path)?;
     let details = if vj_path.exists() {
@@ -76,12 +93,6 @@ pub async fn install_version(
         fs::write(&vj_path, serde_json::to_vec_pretty(&details)?).await?;
         details
     };
-
-    let _ = progress.send(ProgressEvent {
-        done: 0,
-        total: 0,
-        what: "Planning install".into(),
-    });
 
     // 2. asset index
     let ai_path = paths.assets_indexes.join(format!("{}.json", details.asset_index.id));
@@ -160,7 +171,7 @@ pub async fn install_version(
         });
     }
 
-    let plan = InstallPlan {
+    Ok(InstallPlan {
         version_id: details.id.clone(),
         jobs,
         natives_jars,
@@ -169,11 +180,7 @@ pub async fn install_version(
         asset_legacy_or_resources: asset_layout,
         main_class: details.main_class.clone(),
         client_jar,
-    };
-
-    run_jobs(client, &plan.jobs, progress).await?;
-
-    Ok(plan)
+    })
 }
 
 fn job_for_artifact(a: &Artifact, dest: &Path) -> DownloadJob {
