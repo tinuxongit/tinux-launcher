@@ -29,6 +29,10 @@ pub fn detect_default() -> Option<JavaInstall> {
     detect_all().into_iter().next()
 }
 
+pub fn detect_at_path(path: &Path) -> Option<JavaInstall> {
+    probe(path).ok()
+}
+
 pub fn detect_for_major(major: u32) -> Option<JavaInstall> {
     detect_all().into_iter().find(|j| j.major == major)
 }

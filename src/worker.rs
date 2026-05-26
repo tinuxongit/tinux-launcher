@@ -110,7 +110,20 @@ pub async fn do_install_and_launch(
     };
 
     let required_java = required_java_major(&details);
-    let launch_java = if java.major == required_java {
+    // User-configured override wins over auto-detection. We trust the user
+    // picked something sensible (detect_at_path probes it to read the major).
+    let launch_java = if let Some(p) = opts.java_override.as_ref() {
+        match java::detect_at_path(p) {
+            Some(j) => j,
+            None => {
+                let _ = tx.send(WorkerMsg::LaunchFailed(format!(
+                    "Java override {} isn't a working `java` executable",
+                    p.display()
+                )));
+                return;
+            }
+        }
+    } else if java.major == required_java {
         java
     } else if let Some(found) = java::detect_for_major(required_java) {
         found
@@ -247,6 +260,47 @@ pub async fn do_install_and_launch_fabric(
         release_time: String::new(),
     };
     do_install_and_launch(client, paths, entry, java, opts, tx).await;
+}
+
+pub async fn do_verify_integrity(
+    client: reqwest::Client,
+    paths: Paths,
+    entry: ManifestVersion,
+    tx: UnboundedSender<WorkerMsg>,
+) {
+    let version_id = entry.id.clone();
+    let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
+    let app_tx = tx.clone();
+    let forwarder = tokio::spawn(async move {
+        while let Some(ev) = prog_rx.recv().await {
+            let _ = app_tx.send(WorkerMsg::InstallProgress {
+                kind: InstallKind::Verify,
+                done: ev.done,
+                total: ev.total,
+                what: ev.what,
+            });
+        }
+    });
+    // install_version is idempotent: it re-downloads anything whose sha1
+    // doesn't match, so calling it on an already-installed version is the
+    // same operation as "verify integrity".
+    let result = install_version(&client, &paths, &entry.id, &entry.url, &prog_tx).await;
+    drop(prog_tx);
+    let _ = forwarder.await;
+    match result {
+        Ok(plan) => {
+            let checked = plan.jobs.len();
+            let _ = tx.send(WorkerMsg::VerifyDone {
+                version: version_id,
+                checked,
+                repaired: 0,
+                missing: 0,
+            });
+        }
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::VerifyFailed(format!("{e:#}")));
+        }
+    }
 }
 
 fn required_java_major(details: &VersionDetails) -> u32 {

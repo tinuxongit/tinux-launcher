@@ -253,14 +253,60 @@ fn handle_key(app: &mut App, k: KeyEvent) {
         return;
     }
 
-    match k.code {
-        KeyCode::Esc if app.viewing_news.is_some() => {
-            app.viewing_news = None;
-            app.article = None;
-            app.article_loading = false;
+    if app.focus == Focus::JavaPath {
+        match k.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                app.focus = Focus::None;
+                config::save_java_path(&app.java_path_input);
+            }
+            KeyCode::Backspace => {
+                app.java_path_input.pop();
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                if app.java_path_input.chars().count() < 260 {
+                    app.java_path_input.push(c);
+                }
+            }
+            _ => {}
         }
+        return;
+    }
+
+    if app.focus == Focus::JavaPathForVersion {
+        match k.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                app.focus = Focus::None;
+                if let Some(id) = app.java_path_for_version_id.clone() {
+                    config::save_java_path_for(&id, &app.java_path_for_version_input);
+                    if app.java_path_for_version_input.trim().is_empty() {
+                        app.java_path_per_version.remove(&id);
+                    } else {
+                        app.java_path_per_version
+                            .insert(id, app.java_path_for_version_input.clone());
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                app.java_path_for_version_input.pop();
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                if app.java_path_for_version_input.chars().count() < 260 {
+                    app.java_path_for_version_input.push(c);
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    match k.code {
+        // Esc dismisses the topmost modal first (matches visual z-order in ui::draw):
+        // info_popup > update_modal > filters_popup > mod_browser > article > tab default.
         KeyCode::Esc if app.info_popup.is_some() => {
             app.info_popup = None;
+        }
+        KeyCode::Esc if update_modal_visible(app) => {
+            app.update_modal_dismissed = true;
         }
         KeyCode::Esc if app.filters_popup_open => {
             app.filters_popup_open = false;
@@ -268,15 +314,17 @@ fn handle_key(app: &mut App, k: KeyEvent) {
         KeyCode::Esc if app.mod_browser_open => {
             app.mod_browser_open = false;
         }
-        KeyCode::Esc if update_modal_visible(app) => {
-            app.update_modal_dismissed = true;
+        KeyCode::Esc if app.viewing_news.is_some() => {
+            app.viewing_news = None;
+            app.article = None;
+            app.article_loading = false;
         }
         KeyCode::Esc | KeyCode::Char('q') => app.running = false,
-        KeyCode::Char('1') => app.tab = Tab::Play,
-        KeyCode::Char('2') => app.tab = Tab::Versions,
-        KeyCode::Char('3') => app.tab = Tab::Profile,
-        KeyCode::Char('4') => app.tab = Tab::Logs,
-        KeyCode::Char('5') => app.tab = Tab::Settings,
+        KeyCode::Char('1') => { app.tab = Tab::Play; app.focus = Focus::None; }
+        KeyCode::Char('2') => { app.tab = Tab::Versions; app.focus = Focus::None; }
+        KeyCode::Char('3') => { app.tab = Tab::Profile; app.focus = Focus::None; }
+        KeyCode::Char('4') => { app.tab = Tab::Logs; app.focus = Focus::None; }
+        KeyCode::Char('5') => { app.tab = Tab::Settings; app.focus = Focus::None; }
         KeyCode::Tab => {
             app.tab = match app.tab {
                 Tab::Play => Tab::Versions,
@@ -285,6 +333,7 @@ fn handle_key(app: &mut App, k: KeyEvent) {
                 Tab::Logs => Tab::Settings,
                 Tab::Settings => Tab::Play,
             };
+            app.focus = Focus::None;
         }
         KeyCode::Up => match app.tab {
             Tab::Versions => app.list_offset = app.list_offset.saturating_sub(1),
@@ -458,7 +507,12 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         config::save_offline_name(&app.offline_name);
     }
     match hit {
-        Hit::Tab(t) => app.tab = t,
+        Hit::Tab(t) => {
+            app.tab = t;
+            // Drop input focus so keystrokes on the new tab don't route to
+            // hidden fields (e.g. the mod search field on a Versions tab).
+            app.focus = Focus::None;
+        }
         Hit::FilterReleases => {
             app.filter = app::VersionFilter::Releases;
             app.list_offset = 0;
@@ -483,9 +537,10 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
                 app.refresh_installed_mods();
                 trigger_mod_search(app, false);
             } else {
-                app.info_popup = Some(
-                    "You need to install this version first.\n\nClick the Install button to download and set up Fabric, then come back here to browse mods.".to_string(),
-                );
+                app.info_popup = Some(app::InfoPopup::new(
+                    "Install this version first",
+                    "Click the Install button on the Play tab to download and set up Fabric, then come back here to browse mods.",
+                ));
             }
         }
         Hit::CloseModBrowser => {
@@ -505,9 +560,10 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             if app.shaders_available() {
                 switch_browser_tab(app, app::ContentKind::Shaders);
             } else {
-                app.info_popup = Some(
-                    "Shaders need a shader-loader mod (like Iris or Oculus).\n\nInstall Iris from the Mods tab and launch the game once — that creates the shaderpacks folder, and this tab unlocks.".to_string(),
-                );
+                app.info_popup = Some(app::InfoPopup::new(
+                    "Shader loader needed",
+                    "Install Iris or Oculus from the Mods tab. Once a shader-loader jar is present (or you've launched the game once with one installed), this tab unlocks.",
+                ));
             }
         }
         Hit::BrowserTabResourcePacks => switch_browser_tab(app, app::ContentKind::ResourcePacks),
@@ -516,6 +572,23 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         }
         Hit::DismissInfoPopup => {
             app.info_popup = None;
+        }
+        Hit::InstalledFilterToggle => {
+            app.installed_filter_only = !app.installed_filter_only;
+            app.status_message = if app.installed_filter_only {
+                "Showing only installed projects".into()
+            } else {
+                "Showing all results".into()
+            };
+        }
+        Hit::ExportProfileButton => {
+            trigger_export_profile(app);
+        }
+        Hit::ImportProfileButton => {
+            trigger_import_profile(app);
+        }
+        Hit::VerifyIntegrityButton => {
+            trigger_verify_integrity(app);
         }
         Hit::CategoryChip(i) => {
             let name = app
@@ -543,6 +616,60 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         Hit::CheckUpdatesButton => {
             app.update_modal_dismissed = false;
             update::spawn_check(app.client.clone(), app.worker_tx.clone());
+        }
+        Hit::RamDecrease => {
+            let next = app.max_ram_mb.saturating_sub(512).max(512);
+            if next != app.max_ram_mb {
+                app.max_ram_mb = next;
+                config::save_max_ram(next);
+            }
+        }
+        Hit::RamIncrease => {
+            let next = (app.max_ram_mb + 512).min(32768);
+            app.max_ram_mb = next;
+            config::save_max_ram(next);
+        }
+        Hit::JavaPathField => {
+            app.focus = Focus::JavaPath;
+        }
+        Hit::ClearJavaPath => {
+            app.java_path_input.clear();
+            config::save_java_path("");
+        }
+        Hit::JavaPathForVersionField => {
+            app.focus = Focus::JavaPathForVersion;
+            // Lock the field to whatever version is currently selected so the
+            // user's edit doesn't drift onto another row.
+            app.java_path_for_version_id = app
+                .selected_modded_id()
+                .or_else(|| app.selected_version.clone());
+            if let Some(id) = &app.java_path_for_version_id {
+                app.java_path_for_version_input = app
+                    .java_path_per_version
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_default();
+            }
+        }
+        Hit::ClearJavaPathForVersion => {
+            if let Some(id) = app.java_path_for_version_id.clone() {
+                app.java_path_per_version.remove(&id);
+                config::save_java_path_for(&id, "");
+                app.java_path_for_version_input.clear();
+            }
+        }
+        Hit::OpenDataFolder => {
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("explorer.exe")
+                    .arg(app.paths.root.as_os_str())
+                    .spawn();
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = webbrowser::open(&app.paths.root.display().to_string());
+            }
+            app.status_message = format!("Opened {}", app.paths.root.display());
         }
         Hit::InstallUpdateNow => {
             trigger_install_update(app);
@@ -712,7 +839,7 @@ fn trigger_launch(app: &mut App) {
         app.status_message = "Java not detected — install Java 17+ and restart".into();
         return;
     };
-    let opts = match app.account_mode {
+    let base_opts = match app.account_mode {
         AccountMode::Online => match &app.account {
             Some(a) => launch::LaunchOptions::from_account(a),
             None => {
@@ -722,6 +849,18 @@ fn trigger_launch(app: &mut App) {
         },
         AccountMode::Offline => launch::LaunchOptions::offline(app.offline_name.clone()),
     };
+    let target_id = if app.filter == app::VersionFilter::Modded {
+        app.selected_modded_id()
+            .unwrap_or_else(|| app.selected_version.clone().unwrap_or_default())
+    } else {
+        app.selected_version.clone().unwrap_or_default()
+    };
+    let java_override = app
+        .java_path_override_for(&target_id)
+        .map(std::path::PathBuf::from);
+    let opts = base_opts
+        .with_max_ram(app.max_ram_mb)
+        .with_java_override(java_override);
 
     let client = app.client.clone();
     let paths_clone = clone_paths(&app.paths);
@@ -793,6 +932,8 @@ fn trigger_mod_search(app: &mut App, append: bool) {
     let categories = app.selected_categories.clone();
     let client = app.client.clone();
     let tx = app.worker_tx.clone();
+    app.mod_search_request_id = app.mod_search_request_id.wrapping_add(1);
+    let request_id = app.mod_search_request_id;
     let _ = tx.send(event::WorkerMsg::ModSearchStarted);
     tokio::spawn(async move {
         match modrinth::search(
@@ -809,6 +950,7 @@ fn trigger_mod_search(app: &mut App, append: bool) {
         {
             Ok(resp) => {
                 let _ = tx.send(event::WorkerMsg::ModSearchDone {
+                    request_id,
                     hits: resp.hits,
                     total: resp.total_hits,
                     offset,
@@ -816,7 +958,10 @@ fn trigger_mod_search(app: &mut App, append: bool) {
                 });
             }
             Err(e) => {
-                let _ = tx.send(event::WorkerMsg::ModSearchFailed(format!("{e:#}")));
+                let _ = tx.send(event::WorkerMsg::ModSearchFailed {
+                    request_id,
+                    error: format!("{e:#}"),
+                });
             }
         }
     });
@@ -855,11 +1000,12 @@ fn trigger_mod_install(app: &mut App, idx: usize) {
     app.status_message = format!("Installing: {}", hit.title);
     tokio::spawn(async move {
         let loader_ref = loader.as_deref();
-        match modrinth::install_latest(&client, &project_id, &mc, loader_ref, &dest_dir).await {
-            Ok(filename) => {
+        match modrinth::install_with_deps(&client, &project_id, &mc, loader_ref, &dest_dir).await {
+            Ok(result) => {
                 let _ = tx.send(event::WorkerMsg::ModInstallDone {
                     project: project_id,
-                    filename,
+                    filename: result.primary_filename,
+                    dep_count: result.dep_project_ids.len(),
                 });
             }
             Err(e) => {
@@ -890,6 +1036,7 @@ fn trigger_mod_remove(app: &mut App, idx: usize) {
         let _ = tx.send(event::WorkerMsg::ModInstallDone {
             project: String::new(),
             filename: format!("(removed) {name_clone}"),
+            dep_count: 0,
         });
     });
     app.status_message = format!("Removing {filename}...");
@@ -1073,6 +1220,124 @@ fn copy_all_logs(app: &mut App) {
         Ok(()) => app.status_message = format!("Copied {n} log lines to clipboard"),
         Err(e) => app.status_message = format!("Clipboard error: {e}"),
     }
+}
+
+fn trigger_export_profile(app: &mut App) {
+    let Some(_id) = app.selected_modded_id() else {
+        app.status_message = "Open a modded version to export its profile".into();
+        return;
+    };
+    let dir = app.paths.root.join("profiles");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        app.status_message = format!("Couldn't create profiles dir: {e}");
+        return;
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let path = dir.join(format!("profile-{stamp}.json"));
+    match serde_json::to_vec_pretty(&app.installed_meta) {
+        Ok(bytes) => match std::fs::write(&path, &bytes) {
+            Ok(()) => {
+                app.status_message = format!("Exported profile to {}", path.display());
+            }
+            Err(e) => app.status_message = format!("Export failed: {e}"),
+        },
+        Err(e) => app.status_message = format!("Export serialize failed: {e}"),
+    }
+}
+
+fn trigger_import_profile(app: &mut App) {
+    let Some(_id) = app.selected_modded_id() else {
+        app.status_message = "Open a modded version to import a profile into it".into();
+        return;
+    };
+    let Some(mc) = app.selected_version.clone() else { return };
+    let path = app.paths.root.join("profiles").join("import.json");
+    if !path.exists() {
+        app.status_message = format!(
+            "Drop a profile file at {} and click Import again",
+            path.display()
+        );
+        return;
+    }
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) => {
+            app.status_message = format!("Couldn't read import.json: {e}");
+            return;
+        }
+    };
+    let parsed: meta::InstanceMeta = match serde_json::from_slice(&bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            app.status_message = format!("import.json is malformed: {e}");
+            return;
+        }
+    };
+    // Install every project listed in the imported profile that isn't already
+    // installed locally. We fire one worker per project.
+    let loader = if app.browser_kind.uses_loader() {
+        Some(app.loader.modrinth_key().to_string())
+    } else {
+        None
+    };
+    let Some(dest_dir) = app.current_content_dir(app.browser_kind) else {
+        return;
+    };
+    let mut queued = 0usize;
+    for (project_id, _filename) in parsed.map(app.browser_kind).iter() {
+        if app.installed_meta.is_installed(app.browser_kind, project_id) {
+            continue;
+        }
+        let pid = project_id.clone();
+        let mc = mc.clone();
+        let loader = loader.clone();
+        let dest_dir = dest_dir.clone();
+        let client = app.client.clone();
+        let tx = app.worker_tx.clone();
+        let _ = tx.send(event::WorkerMsg::ModInstallStarted(pid.clone()));
+        tokio::spawn(async move {
+            let loader_ref = loader.as_deref();
+            match modrinth::install_with_deps(&client, &pid, &mc, loader_ref, &dest_dir).await {
+                Ok(r) => {
+                    let _ = tx.send(event::WorkerMsg::ModInstallDone {
+                        project: pid,
+                        filename: r.primary_filename,
+                        dep_count: r.dep_project_ids.len(),
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(event::WorkerMsg::ModInstallFailed {
+                        project: pid,
+                        error: format!("{e:#}"),
+                    });
+                }
+            }
+        });
+        queued += 1;
+    }
+    app.status_message = format!("Importing {queued} project(s) — watch the installed list");
+}
+
+fn trigger_verify_integrity(app: &mut App) {
+    if app.integrity_in_progress {
+        app.status_message = "Verification already running".into();
+        return;
+    }
+    let Some(entry) = app.selected_manifest_entry() else {
+        app.status_message = "Pick a version to verify".into();
+        return;
+    };
+    app.integrity_in_progress = true;
+    app.status_message = format!("Verifying {}...", entry.id);
+    let client = app.client.clone();
+    let paths_clone = clone_paths(&app.paths);
+    let tx = app.worker_tx.clone();
+    tokio::spawn(async move {
+        worker::do_verify_integrity(client, paths_clone, entry, tx).await;
+    });
 }
 
 fn switch_browser_tab(app: &mut App, kind: app::ContentKind) {

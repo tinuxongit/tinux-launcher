@@ -2,6 +2,7 @@ use crate::app::{
     AccountMode, App, ContentKind, Focus, InstallState, LaunchState, ModLoader, SkinModel,
     UpdateStatus, VersionFilter,
 };
+use crate::modrinth::SearchHit;
 use crate::event::{Hit, InstallKind, Tab};
 use crate::news::Block as ArticleBlock;
 use crate::skin::SkinPreviewWidget;
@@ -362,9 +363,11 @@ fn draw_chip_button(
 }
 
 fn draw_info_popup(f: &mut Frame, app: &mut App, area: Rect) {
-    let Some(message) = app.info_popup.clone() else {
+    let Some(popup) = app.info_popup.clone() else {
         return;
     };
+    let title_text = format!(" {} ", popup.title);
+    let message = popup.body;
     let w = 60u16.min(area.width.saturating_sub(4));
     // text width inside borders + 2-col horizontal margin
     let text_w = w.saturating_sub(6) as usize;
@@ -393,7 +396,7 @@ fn draw_info_popup(f: &mut Frame, app: &mut App, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::ACCENT))
         .style(theme::base())
-        .title(Span::styled(" Heads up ", theme::accent_bold()));
+        .title(Span::styled(title_text, theme::accent_bold()));
     let inner = block.inner(rect).inner(Margin {
         horizontal: 2,
         vertical: 1,
@@ -408,6 +411,7 @@ fn draw_info_popup(f: &mut Frame, app: &mut App, area: Rect) {
             .wrap(Wrap { trim: true }),
         text_rect,
     );
+    let _ = app;
 
     let btn_y = inner.y + inner.height.saturating_sub(BUTTON_H);
     let btn_row = Rect::new(inner.x, btn_y, inner.width, BUTTON_H);
@@ -2046,14 +2050,232 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(theme::RED).bg(theme::BG),
         ),
     };
-    let max_h = inner.height.saturating_sub(y - inner.y);
-    let status_rect = Rect::new(inner.x, y, inner.width, max_h.min(3));
+    let status_rect = Rect::new(inner.x, y, inner.width, 2);
     f.render_widget(
         Paragraph::new(Span::styled(status_line, status_style))
             .style(theme::base())
             .wrap(Wrap { trim: true }),
         status_rect,
     );
+    y += 3;
+
+    // --- Game section: RAM and data folder ---
+    y = draw_section_header(f, "Game", inner, y);
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Max RAM: ", theme::dim()),
+            Span::styled(
+                format!("{} MB", app.max_ram_mb),
+                Style::default()
+                    .fg(theme::ACCENT_HI)
+                    .bg(theme::BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("    (range 512 – 32768)", theme::dim()),
+        ]))
+        .style(theme::base()),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    let ram_btn_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
+    let ram_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(12),
+            Constraint::Length(2),
+            Constraint::Length(12),
+            Constraint::Length(4),
+            Constraint::Length(20),
+            Constraint::Min(0),
+        ])
+        .split(ram_btn_row);
+    draw_button(f, app, ram_cols[0], "–  512 MB", Hit::RamDecrease, false);
+    draw_button(f, app, ram_cols[2], "+  512 MB", Hit::RamIncrease, false);
+    draw_button(f, app, ram_cols[4], "Open data folder", Hit::OpenDataFolder, false);
+    y += BUTTON_H + 1;
+
+    // --- Java section ---
+    y = draw_section_header(f, "Java", inner, y);
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "Override path (leave blank to auto-detect). Path applies to all versions.",
+            theme::dim(),
+        ))
+        .style(theme::base())
+        .wrap(Wrap { trim: true }),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    let jp_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
+    let jp_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(2), Constraint::Length(10)])
+        .split(jp_row);
+    let jp_label_owned: String = if app.java_path_input.is_empty() {
+        "(auto-detect)".to_string()
+    } else {
+        app.java_path_input.clone()
+    };
+    let jp_focused = app.focus == Focus::JavaPath;
+    draw_text_field(
+        f,
+        app,
+        jp_cols[0],
+        Hit::JavaPathField,
+        Focus::JavaPath,
+        " Java path ",
+        &jp_label_owned,
+        jp_focused,
+    );
+    if !app.java_path_input.is_empty() {
+        draw_button(f, app, jp_cols[2], "Clear", Hit::ClearJavaPath, false);
+    }
+    y += BUTTON_H + 1;
+
+    let label_for_version = app
+        .selected_modded_id()
+        .or_else(|| app.selected_version.clone())
+        .unwrap_or_else(|| "(no version selected)".to_string());
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Per-version override for ", theme::dim()),
+            Span::styled(
+                label_for_version,
+                Style::default().fg(theme::FG).bg(theme::BG),
+            ),
+        ]))
+        .style(theme::base()),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    let jpv_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
+    let jpv_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(2), Constraint::Length(10)])
+        .split(jpv_row);
+    let pv_label_owned: String = if app.focus == Focus::JavaPathForVersion {
+        app.java_path_for_version_input.clone()
+    } else {
+        let id = app
+            .selected_modded_id()
+            .or_else(|| app.selected_version.clone());
+        match id.as_deref().and_then(|i| app.java_path_per_version.get(i)) {
+            Some(v) if !v.is_empty() => v.clone(),
+            _ => "(none)".to_string(),
+        }
+    };
+    let pv_focused = app.focus == Focus::JavaPathForVersion;
+    draw_text_field(
+        f,
+        app,
+        jpv_cols[0],
+        Hit::JavaPathForVersionField,
+        Focus::JavaPathForVersion,
+        " Java path (this version) ",
+        &pv_label_owned,
+        pv_focused,
+    );
+    let id_for_clear = app
+        .selected_modded_id()
+        .or_else(|| app.selected_version.clone());
+    let has_pv_override = id_for_clear
+        .as_deref()
+        .and_then(|i| app.java_path_per_version.get(i))
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if has_pv_override {
+        draw_button(f, app, jpv_cols[2], "Clear", Hit::ClearJavaPathForVersion, false);
+    }
+    y += BUTTON_H + 1;
+
+    // --- Maintenance section ---
+    y = draw_section_header(f, "Maintenance", inner, y);
+    let verify_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
+    let verify_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(22), Constraint::Min(0)])
+        .split(verify_row);
+    if app.integrity_in_progress {
+        draw_disabled_button(f, verify_cols[0], "Verifying...");
+    } else {
+        draw_button(
+            f,
+            app,
+            verify_cols[0],
+            "Verify integrity",
+            Hit::VerifyIntegrityButton,
+            false,
+        );
+    }
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "Re-hashes every file for the selected version and re-downloads anything that's missing or corrupted.",
+            theme::dim(),
+        ))
+        .style(theme::base())
+        .wrap(Wrap { trim: true }),
+        Rect::new(
+            verify_cols[1].x + 1,
+            verify_cols[1].y,
+            verify_cols[1].width.saturating_sub(1),
+            BUTTON_H,
+        ),
+    );
+}
+
+fn draw_section_header(f: &mut Frame, title: &str, inner: Rect, mut y: u16) -> u16 {
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(title.to_string(), theme::accent_bold())))
+            .style(theme::base()),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    f.render_widget(
+        Paragraph::new("─".repeat(inner.width as usize))
+            .style(Style::default().fg(theme::BORDER).bg(theme::BG)),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y + 1
+}
+
+fn draw_text_field(
+    f: &mut Frame,
+    app: &mut App,
+    rect: Rect,
+    hit: Hit,
+    _focus_kind: Focus,
+    title: &str,
+    content: &str,
+    focused: bool,
+) {
+    let hovered = app.hover == Some(hit);
+    let border_fg = if focused {
+        theme::ACCENT
+    } else if hovered {
+        theme::FG_DIM
+    } else {
+        theme::BORDER
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_fg).bg(theme::BG))
+        .style(theme::base())
+        .title(Span::styled(title.to_string(), theme::dim()));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let display = if focused {
+        format!(" {content}▎")
+    } else {
+        format!(" {content}")
+    };
+    let style = if !focused && content.starts_with('(') {
+        theme::dim()
+    } else {
+        theme::base()
+    };
+    draw_vcentered_label(f, &display, inner, style);
+    app.click_regions.push((rect, hit));
 }
 
 fn draw_mod_browser(f: &mut Frame, app: &mut App, area: Rect) {
@@ -2079,11 +2301,44 @@ fn draw_mod_browser(f: &mut Frame, app: &mut App, area: Rect) {
     let top_row = Rect::new(inner.x, inner.y, inner.width, 1);
     let tabs_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(8)])
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(10),
+            Constraint::Length(1),
+            Constraint::Length(10),
+            Constraint::Length(1),
+            Constraint::Length(8),
+        ])
         .split(top_row);
     draw_browser_tabs(f, app, tabs_cols[0]);
 
-    let close_rect = tabs_cols[1];
+    let export_rect = tabs_cols[1];
+    let hovered_e = app.hover == Some(Hit::ExportProfileButton);
+    let style_e = if hovered_e {
+        Style::default().fg(theme::ACCENT_HI).bg(theme::BG).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::ACCENT).bg(theme::BG)
+    };
+    f.render_widget(
+        Paragraph::new("⤓ Export").style(style_e).alignment(Alignment::Right),
+        export_rect,
+    );
+    app.click_regions.push((export_rect, Hit::ExportProfileButton));
+
+    let import_rect = tabs_cols[3];
+    let hovered_i = app.hover == Some(Hit::ImportProfileButton);
+    let style_i = if hovered_i {
+        Style::default().fg(theme::ACCENT_HI).bg(theme::BG).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::ACCENT).bg(theme::BG)
+    };
+    f.render_widget(
+        Paragraph::new("⤒ Import").style(style_i).alignment(Alignment::Right),
+        import_rect,
+    );
+    app.click_regions.push((import_rect, Hit::ImportProfileButton));
+
+    let close_rect = tabs_cols[5];
     let hovered = app.hover == Some(Hit::CloseModBrowser);
     let cs = if hovered {
         Style::default().fg(theme::ACCENT_HI).bg(theme::BG).add_modifier(Modifier::BOLD)
@@ -2172,12 +2427,30 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    // Split the top row: search field on the left, Filters button on the right.
+    // Split the top row: search field on the left, Filters button + Installed toggle on the right.
     let top_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(18)])
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(15),
+            Constraint::Length(1),
+            Constraint::Length(18),
+        ])
         .split(rows[0]);
     draw_mod_search_field(f, app, top_cols[0]);
+    let installed_label = if app.installed_filter_only {
+        "✓ Installed"
+    } else {
+        "  All"
+    };
+    draw_button(
+        f,
+        app,
+        top_cols[1],
+        installed_label,
+        Hit::InstalledFilterToggle,
+        app.installed_filter_only,
+    );
     let count = app.selected_categories.len();
     let filter_label = if count == 0 {
         "▼ Filters".to_string()
@@ -2187,7 +2460,7 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
     draw_button(
         f,
         app,
-        top_cols[1],
+        top_cols[3],
         &filter_label,
         Hit::OpenFiltersButton,
         count > 0,
@@ -2224,17 +2497,35 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    // Reserve the last row for a "Show more" button when more results are available.
-    let has_more = (app.mod_search_results.len() as u32) < app.mod_search_total;
+    // Build the visible list, applying the "installed only" filter when active.
+    // Keeping original indices so click handlers still address the right hit.
+    let visible: Vec<(usize, SearchHit)> = if app.installed_filter_only {
+        app.mod_search_results
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| app.is_project_installed(&h.project_id))
+            .map(|(i, h)| (i, h.clone()))
+            .collect()
+    } else {
+        app.mod_search_results
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (i, h.clone()))
+            .collect()
+    };
+
+    // "Show more" only makes sense when not filtering locally to installed.
+    let has_more = !app.installed_filter_only
+        && (app.mod_search_results.len() as u32) < app.mod_search_total;
     let footer_h: u16 = if has_more { 1 } else { 0 };
     let usable_h = list_area.height.saturating_sub(footer_h);
 
     let h = (usable_h as usize) / 2; // each row is 2 lines tall
-    let total = app.mod_search_results.len();
+    let total = visible.len();
     let start = app.mod_search_offset.min(total);
     let end = (start + h).min(total);
-    for (i, hit) in app.mod_search_results[start..end].iter().enumerate() {
-        let global = start + i;
+    for (i, (global, hit)) in visible[start..end].iter().enumerate() {
+        let global = *global;
         let y = list_area.y + (i as u16) * 2;
         if y + 1 >= list_area.y + usable_h {
             break;

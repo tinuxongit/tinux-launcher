@@ -66,6 +66,17 @@ pub enum Hit {
     OpenReleasesPage,
     InstallUpdateNow,
     DismissUpdate,
+    RamDecrease,
+    RamIncrease,
+    JavaPathField,
+    ClearJavaPath,
+    JavaPathForVersionField,
+    ClearJavaPathForVersion,
+    OpenDataFolder,
+    VerifyIntegrityButton,
+    InstalledFilterToggle,
+    ExportProfileButton,
+    ImportProfileButton,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -138,17 +149,22 @@ pub enum WorkerMsg {
     FabricMcVersionsFailed(String),
     ModSearchStarted,
     ModSearchDone {
+        request_id: u64,
         hits: Vec<SearchHit>,
         total: u32,
         offset: u32,
         append: bool,
     },
-    ModSearchFailed(String),
+    ModSearchFailed {
+        request_id: u64,
+        error: String,
+    },
     ModInstallStarted(String),
     ModInstallDone {
         #[allow(dead_code)]
         project: String,
         filename: String,
+        dep_count: usize,
     },
     ModInstallFailed {
         #[allow(dead_code)]
@@ -157,4 +173,11 @@ pub enum WorkerMsg {
     },
     CategoriesLoaded(Vec<Category>),
     CategoriesFailed(String),
+    VerifyDone {
+        version: String,
+        checked: usize,
+        repaired: usize,
+        missing: usize,
+    },
+    VerifyFailed(String),
 }

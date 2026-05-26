@@ -109,6 +109,18 @@ impl ContentKind {
 }
 
 #[derive(Debug, Clone)]
+pub struct InfoPopup {
+    pub title: String,
+    pub body: String,
+}
+
+impl InfoPopup {
+    pub fn new(title: impl Into<String>, body: impl Into<String>) -> Self {
+        Self { title: title.into(), body: body.into() }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum UpdateStatus {
     Idle,
     Checking,
@@ -147,6 +159,8 @@ pub enum Focus {
     OfflineName,
     SkinUrl,
     ModSearch,
+    JavaPath,
+    JavaPathForVersion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,14 +261,24 @@ pub struct App {
     pub mod_search_offset: usize,
     pub mod_search_api_offset: u32,
     pub mod_search_total: u32,
+    pub mod_search_request_id: u64,
     pub mod_installing: Option<String>,
     pub installed_mods: Vec<String>,
-    pub info_popup: Option<String>,
+    pub info_popup: Option<InfoPopup>,
     pub categories: Vec<Category>,
     pub selected_categories: Vec<String>,
     pub filters_popup_open: bool,
     pub filters_scroll: u16,
     pub installed_meta: InstanceMeta,
+
+    pub max_ram_mb: u32,
+    pub java_path_input: String,
+    pub java_path_for_version_input: String,
+    pub java_path_for_version_id: Option<String>,
+    pub java_path_per_version: std::collections::HashMap<String, String>,
+
+    pub integrity_in_progress: bool,
+    pub installed_filter_only: bool,
 }
 
 impl App {
@@ -287,6 +311,18 @@ impl App {
             .as_ref()
             .and_then(|c| c.last_filter.as_deref().and_then(VersionFilter::parse))
             .unwrap_or(VersionFilter::Releases);
+        let saved_max_ram = cfg_opt
+            .as_ref()
+            .and_then(|c| c.max_ram_mb)
+            .unwrap_or(2048);
+        let saved_java_path = cfg_opt
+            .as_ref()
+            .and_then(|c| c.java_path.clone())
+            .unwrap_or_default();
+        let saved_java_per_version = cfg_opt
+            .as_ref()
+            .map(|c| c.java_path_per_version.clone())
+            .unwrap_or_default();
         Self {
             running: true,
             tab: Tab::Play,
@@ -348,6 +384,7 @@ impl App {
             mod_search_offset: 0,
             mod_search_api_offset: 0,
             mod_search_total: 0,
+            mod_search_request_id: 0,
             mod_installing: None,
             installed_mods: Vec::new(),
             info_popup: None,
@@ -356,7 +393,26 @@ impl App {
             filters_popup_open: false,
             filters_scroll: 0,
             installed_meta: InstanceMeta::default(),
+            max_ram_mb: saved_max_ram,
+            java_path_input: saved_java_path,
+            java_path_for_version_input: String::new(),
+            java_path_for_version_id: None,
+            java_path_per_version: saved_java_per_version,
+            integrity_in_progress: false,
+            installed_filter_only: false,
         }
+    }
+
+    pub fn java_path_override_for(&self, version_id: &str) -> Option<&str> {
+        if let Some(p) = self.java_path_per_version.get(version_id) {
+            if !p.is_empty() {
+                return Some(p.as_str());
+            }
+        }
+        if !self.java_path_input.is_empty() {
+            return Some(self.java_path_input.as_str());
+        }
+        None
     }
 
     pub fn push_log(&mut self, line: String) {
@@ -412,9 +468,7 @@ impl App {
     }
 
     pub fn selected_modded_id(&self) -> Option<String> {
-        let mc = self.selected_version.as_ref()?;
-        let loader = self.latest_stable_fabric_loader()?;
-        Some(format!("fabric-loader-{loader}-{mc}"))
+        self.modded_id_for(self.selected_version.as_ref()?)
     }
 
     pub fn selected_modded_installed(&self) -> bool {
@@ -444,9 +498,40 @@ impl App {
     }
 
     pub fn shaders_available(&self) -> bool {
-        self.current_content_dir(ContentKind::Shaders)
+        // The shaderpacks/ folder existing is the canonical signal (Iris/OptiFine
+        // create it on first launch). As a fallback, detect a shader-loader mod
+        // sitting in the mods/ folder — that's enough to unlock the tab even
+        // before the user has run the game once with Iris installed.
+        if self
+            .current_content_dir(ContentKind::Shaders)
             .map(|p| p.exists())
             .unwrap_or(false)
+        {
+            return true;
+        }
+        let Some(mods_dir) = self.current_content_dir(ContentKind::Mods) else {
+            return false;
+        };
+        let Ok(rd) = std::fs::read_dir(&mods_dir) else {
+            return false;
+        };
+        for entry in rd.flatten() {
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if !name.ends_with(".jar") {
+                continue;
+            }
+            // Match common shader-loader filenames. Iris ships as "iris-mc...",
+            // OptiFine as "OptiFine_*", Oculus as "oculus-*", Canvas as "canvas-*".
+            if name.starts_with("iris-")
+                || name.starts_with("oculus-")
+                || name.contains("optifine")
+                || name.contains("optifabric")
+                || name.starts_with("canvas-")
+            {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn current_instance_dir(&self) -> Option<PathBuf> {
@@ -488,7 +573,8 @@ impl App {
             .filter_map(|e| e.ok())
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
-                if valid_ext.iter().any(|ext| name.ends_with(ext)) {
+                let lower = name.to_ascii_lowercase();
+                if valid_ext.iter().any(|ext| lower.ends_with(ext)) {
                     Some(name)
                 } else {
                     None
@@ -517,6 +603,9 @@ impl App {
     }
 
     pub fn modded_id_for(&self, mc_id: &str) -> Option<String> {
+        // Same construction as selected_modded_id(); kept as a separate entry
+        // point so callers can build the fabric id for an arbitrary mc id
+        // (e.g. for the installed-check on every row of the modded list).
         let loader = self.latest_stable_fabric_loader()?;
         Some(format!("fabric-loader-{loader}-{mc_id}"))
     }
@@ -720,11 +809,17 @@ impl App {
                 self.mod_search_error = None;
             }
             WorkerMsg::ModSearchDone {
+                request_id,
                 hits,
                 total,
                 offset,
                 append,
             } => {
+                // Stale response from an older search — discard so we don't
+                // clobber what the user is actually looking at.
+                if request_id != self.mod_search_request_id {
+                    return;
+                }
                 self.mod_search_loading = false;
                 self.mod_search_total = total;
                 self.mod_search_api_offset = offset + hits.len() as u32;
@@ -735,22 +830,33 @@ impl App {
                     self.mod_search_offset = 0;
                 }
             }
-            WorkerMsg::ModSearchFailed(e) => {
+            WorkerMsg::ModSearchFailed { request_id, error } => {
+                if request_id != self.mod_search_request_id {
+                    return;
+                }
                 self.mod_search_loading = false;
-                self.mod_search_error = Some(e.clone());
-                self.status_message = format!("Mod search failed: {e}");
+                self.mod_search_error = Some(error.clone());
+                self.status_message = format!("Mod search failed: {error}");
             }
             WorkerMsg::ModInstallStarted(p) => {
                 self.mod_installing = Some(p);
             }
-            WorkerMsg::ModInstallDone { project, filename } => {
+            WorkerMsg::ModInstallDone {
+                project,
+                filename,
+                dep_count,
+            } => {
                 self.mod_installing = None;
                 if !project.is_empty() {
                     let kind = self.browser_kind;
                     self.installed_meta.record(kind, project, filename.clone());
                     self.save_meta();
                 }
-                self.status_message = format!("Installed: {filename}");
+                self.status_message = if dep_count == 0 {
+                    format!("Installed: {filename}")
+                } else {
+                    format!("Installed: {filename}  (+{dep_count} dep{})", if dep_count == 1 { "" } else { "s" })
+                };
                 self.refresh_installed_mods();
             }
             WorkerMsg::ModInstallFailed { project: _, error } => {
@@ -762,6 +868,16 @@ impl App {
             }
             WorkerMsg::CategoriesFailed(e) => {
                 tracing::warn!("modrinth categories fetch failed: {e}");
+            }
+            WorkerMsg::VerifyDone { version, checked, repaired, missing } => {
+                self.integrity_in_progress = false;
+                self.status_message = format!(
+                    "Verify {version}: {checked} files checked, {repaired} re-fetched, {missing} still missing"
+                );
+            }
+            WorkerMsg::VerifyFailed(e) => {
+                self.integrity_in_progress = false;
+                self.status_message = format!("Verify failed: {e}");
             }
         }
     }

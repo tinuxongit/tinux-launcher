@@ -37,6 +37,37 @@ fn is_modded_id(id: &str) -> bool {
     id.starts_with("fabric-loader-")
 }
 
+/// One-time copy from a pre-shared-.minecraft instance dir into the shared
+/// vanilla profile. Skips the copy if the destination already has content
+/// (so we don't trample an existing setup) or if the source doesn't exist.
+fn migrate_legacy_instance(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !src.exists() {
+        return Ok(());
+    }
+    // If dst already has anything beyond a fresh empty dir, don't touch it.
+    if std::fs::read_dir(dst)?.next().is_some() {
+        return Ok(());
+    }
+    copy_dir_recursive(src, dst)
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if ty.is_file() {
+            std::fs::copy(&from, &to)?;
+        }
+        // symlinks, etc. are skipped
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct LaunchOptions {
     pub min_ram_mb: u32,
@@ -45,6 +76,7 @@ pub struct LaunchOptions {
     pub uuid: String,
     pub access_token: String,
     pub user_type: String, // "msa" for Microsoft, "legacy" for offline
+    pub java_override: Option<std::path::PathBuf>,
 }
 
 impl LaunchOptions {
@@ -56,6 +88,7 @@ impl LaunchOptions {
             uuid: "00000000-0000-0000-0000-000000000000".into(),
             access_token: "0".into(),
             user_type: "legacy".into(),
+            java_override: None,
         }
     }
 
@@ -67,7 +100,18 @@ impl LaunchOptions {
             uuid: acc.uuid.clone(),
             access_token: acc.access_token.clone(),
             user_type: "msa".into(),
+            java_override: None,
         }
+    }
+
+    pub fn with_java_override(mut self, p: Option<std::path::PathBuf>) -> Self {
+        self.java_override = p;
+        self
+    }
+
+    pub fn with_max_ram(mut self, mb: u32) -> Self {
+        self.max_ram_mb = mb.max(self.min_ram_mb);
+        self
     }
 }
 
@@ -84,6 +128,12 @@ pub async fn launch(
 
     let game_dir = pick_game_dir(paths, plan);
     std::fs::create_dir_all(&game_dir)?;
+    // First-launch migration: if the shared .minecraft is brand-new and
+    // there's an old per-version instance dir with content, copy it across
+    // so existing players keep their worlds/options/screenshots.
+    if game_dir == paths.vanilla_minecraft {
+        let _ = migrate_legacy_instance(&paths.instances.join(&plan.version_id), &game_dir);
+    }
 
     let cp = build_classpath(&plan.classpath, &plan.client_jar);
 
