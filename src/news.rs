@@ -10,8 +10,6 @@ pub struct NewsEntry {
     pub version: String,
     #[serde(default)]
     pub date: String,
-    #[serde(default, rename = "shortText")]
-    pub short_text: String,
     #[serde(default, rename = "type")]
     pub kind: String,
 }
