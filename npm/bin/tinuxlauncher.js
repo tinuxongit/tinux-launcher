@@ -40,9 +40,8 @@ if (args[0] === "--version" || args[0] === "-v") {
 }
 
 if (!fs.existsSync(bin)) {
-  console.error("Tinux Launcher binary is missing; building it now...");
-  const built = buildRelease();
-  if (!built) {
+  console.error("Tinux Launcher binary is missing; installing it now...");
+  if (!installBinary() && !buildRelease()) {
     process.exit(1);
   }
 }
@@ -60,7 +59,17 @@ if (result.error) {
 
 process.exit(result.status ?? 0);
 
+function installBinary() {
+  const result = spawnSync(process.execPath, ["npm/scripts/install-binary.js"], {
+    cwd: root,
+    stdio: "inherit",
+    windowsHide: false,
+  });
+  return !result.error && result.status === 0;
+}
+
 function buildRelease() {
+  console.error("Falling back to building Tinux Launcher from source.");
   const cargo = process.platform === "win32" ? "cargo.exe" : "cargo";
   const result = spawnSync(cargo, ["build", "--release"], {
     cwd: root,

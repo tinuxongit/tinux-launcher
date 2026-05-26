@@ -20,7 +20,8 @@ pnpm add -g .
 tinuxlauncher
 ```
 
-The pnpm installer builds the Rust release binary during install, so users need Rust/Cargo installed.
+The pnpm installer downloads a prebuilt binary from GitHub Releases when one is available.
+If there is no prebuilt binary for the user's OS/CPU, it falls back to building from source with Rust/Cargo.
 
 To update to the latest GitHub version:
 
