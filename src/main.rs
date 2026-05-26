@@ -1108,6 +1108,7 @@ fn clone_paths(p: &paths::Paths) -> paths::Paths {
         assets_objects: p.assets_objects.clone(),
         natives: p.natives.clone(),
         instances: p.instances.clone(),
+        vanilla_minecraft: p.vanilla_minecraft.clone(),
         logs: p.logs.clone(),
         cache: p.cache.clone(),
     }

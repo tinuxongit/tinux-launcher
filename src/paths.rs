@@ -11,6 +11,7 @@ pub struct Paths {
     pub assets_objects: PathBuf,
     pub natives: PathBuf,
     pub instances: PathBuf,
+    pub vanilla_minecraft: PathBuf,
     pub logs: PathBuf,
     pub cache: PathBuf,
 }
@@ -29,6 +30,7 @@ impl Paths {
             assets,
             natives: root.join("natives"),
             instances: root.join("instances"),
+            vanilla_minecraft: root.join(".minecraft"),
             logs: root.join("logs"),
             cache: dirs.cache_dir().to_path_buf(),
             root,
@@ -47,6 +49,7 @@ impl Paths {
             &self.assets_objects,
             &self.natives,
             &self.instances,
+            &self.vanilla_minecraft,
             &self.logs,
             &self.cache,
         ] {

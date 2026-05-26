@@ -12,6 +12,31 @@ use tokio::sync::mpsc::UnboundedSender;
 
 pub const CLASSPATH_SEP: &str = if cfg!(windows) { ";" } else { ":" };
 
+/// Pick the working directory for the running Minecraft process.
+///
+/// Vanilla modern versions all share `<root>/.minecraft/` so options, saves,
+/// resource packs, screenshots, and the first-launch onboarding all persist
+/// across versions — same as the official launcher.
+/// Modded and legacy versions stay in `<root>/instances/<version_id>/` so
+/// mods can't bleed across Minecraft versions and legacy resource layouts
+/// (with their per-version `resources/` folder) don't trample each other.
+fn pick_game_dir(paths: &Paths, plan: &InstallPlan) -> std::path::PathBuf {
+    if is_modded_id(&plan.version_id) {
+        return paths.instances.join(&plan.version_id);
+    }
+    match plan.asset_legacy_or_resources {
+        AssetLayout::Modern => paths.vanilla_minecraft.clone(),
+        AssetLayout::Legacy | AssetLayout::PreVirtual => {
+            paths.instances.join(&plan.version_id)
+        }
+    }
+}
+
+fn is_modded_id(id: &str) -> bool {
+    // Synthetic ids we generate for mod-loader installs.
+    id.starts_with("fabric-loader-")
+}
+
 #[derive(Debug, Clone)]
 pub struct LaunchOptions {
     pub min_ram_mb: u32,
@@ -57,7 +82,7 @@ pub async fn launch(
     let natives = paths.natives_dir(&plan.version_id);
     crate::download::extract_natives(&plan.natives_jars, &natives).await?;
 
-    let game_dir = paths.instances.join(&plan.version_id);
+    let game_dir = pick_game_dir(paths, plan);
     std::fs::create_dir_all(&game_dir)?;
 
     let cp = build_classpath(&plan.classpath, &plan.client_jar);
