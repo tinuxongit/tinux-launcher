@@ -89,7 +89,7 @@ pub async fn launch(
     cmd.arg(format!("-Xms{}M", opts.min_ram_mb));
     cmd.arg(format!("-Xmx{}M", opts.max_ram_mb));
     cmd.arg(format!("-Djava.library.path={}", natives.display()));
-    cmd.arg("-Dminecraft.launcher.brand=revo-launcher");
+    cmd.arg("-Dminecraft.launcher.brand=tinux-launcher");
     cmd.arg("-Dminecraft.launcher.version=0.1.0");
 
     let ctx = ArgContext {
@@ -100,12 +100,12 @@ pub async fn launch(
         assets_index_name: &plan.asset_index_id,
         auth_uuid: &opts.uuid,
         auth_access_token: &opts.access_token,
-        clientid: "revo-launcher",
+        clientid: "tinux-launcher",
         auth_xuid: "",
         user_type: &opts.user_type,
         version_type: details.kind.as_deref().unwrap_or("release"),
         natives_directory: &natives,
-        launcher_name: "revo-launcher",
+        launcher_name: "tinux-launcher",
         launcher_version: "0.1.0",
         classpath: &cp,
     };

@@ -17,6 +17,8 @@ impl Config {
 }
 
 pub fn path() -> Option<PathBuf> {
+    // Matches `paths.rs`. See the note there for why this keeps the legacy "revo"
+    // segments even after the Tinux rebrand.
     directories::ProjectDirs::from("dev", "revo", "RevoLauncher")
         .map(|d| d.data_dir().join("config.json"))
 }

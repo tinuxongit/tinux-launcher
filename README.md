@@ -43,7 +43,7 @@ Tinux ships with a baked-in Azure App ID (`164bca05-…`) so end users never hav
 
 If you want to use your own Azure app instead (e.g. you're forking and shipping your own build), you have three ways to override the baked id, highest precedence first:
 
-1. **Env var** — `REVO_MS_CLIENT_ID=<guid>` (one-off, e.g. for CI tests).
+1. **Env var** — `TINUX_MS_CLIENT_ID=<guid>` (one-off, e.g. for CI tests).
 2. **Config file** — paste the GUID into `ms_client_id` in `config.json` (see "Data layout" for the path). Persists between runs without editing source.
 3. **Source** — replace the `BAKED_CLIENT_ID` constant in `src/auth.rs` and rebuild.
 
@@ -60,7 +60,7 @@ assets/indexes/<id>.json   # asset index per assets id
 assets/objects/<2>/<hash>  # content-addressed asset blobs
 natives/<version>/         # extracted .dll/.so/.dylib per launch
 instances/<version>/       # game cwd (saves, options.txt, etc.)
-logs/revo.log              # tracing log file
+logs/tinux.log             # tracing log file
 ```
 
 ## Architecture

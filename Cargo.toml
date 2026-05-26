@@ -1,8 +1,8 @@
 [package]
-name = "revo-launcher"
+name = "tinux-launcher"
 version = "0.1.0"
 edition = "2021"
-description = "A fast, clickable terminal Minecraft launcher"
+description = "Tinux Launcher — fast, clickable terminal Minecraft Java Edition launcher"
 
 [dependencies]
 ratatui = "0.29"

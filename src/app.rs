@@ -88,7 +88,7 @@ pub struct App {
 impl App {
     pub fn new(paths: Paths, worker_tx: UnboundedSender<WorkerMsg>) -> Self {
         let client = reqwest::Client::builder()
-            .user_agent("revo-launcher/0.1")
+            .user_agent("tinux-launcher/0.1")
             .pool_max_idle_per_host(16)
             .build()
             .expect("reqwest client");

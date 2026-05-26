@@ -95,7 +95,7 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
 
     // title + tabs row
     let title = Span::styled(
-        " ⛏  Revo Launcher",
+        " ⛏  Tinux Launcher",
         Style::default()
             .fg(theme::ACCENT_HI)
             .add_modifier(Modifier::BOLD),

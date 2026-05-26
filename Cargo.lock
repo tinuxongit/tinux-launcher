@@ -1608,38 +1608,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "revo-launcher"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "base64",
- "chrono",
- "crossterm",
- "directories",
- "futures",
- "hex",
- "keyring",
- "rand 0.8.6",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "sha1",
- "sysinfo",
- "thiserror 2.0.18",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "url",
- "uuid",
- "webbrowser",
- "zip",
-]
-
-[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2129,6 +2097,38 @@ checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
 dependencies = [
  "num-conv",
  "time-core",
+]
+
+[[package]]
+name = "tinux-launcher"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "base64",
+ "chrono",
+ "crossterm",
+ "directories",
+ "futures",
+ "hex",
+ "keyring",
+ "rand 0.8.6",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sysinfo",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "webbrowser",
+ "zip",
 ]
 
 [[package]]

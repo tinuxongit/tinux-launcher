@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
     // Drop a stub config.json so the Accounts tab can show users a file to open.
     config::ensure_stub();
 
-    tracing::info!("Revo Launcher starting; data dir: {}", paths.root.display());
+    tracing::info!("Tinux Launcher starting; data dir: {}", paths.root.display());
 
     let (worker_tx, mut worker_rx) = unbounded_channel();
     let mut app = App::new(paths, worker_tx.clone());

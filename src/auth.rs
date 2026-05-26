@@ -2,7 +2,7 @@
 //!
 //! Requires a Microsoft Entra (Azure AD) application registration with personal-account
 //! support and a redirect URI of `http://localhost:<port>/callback`. Set the client id
-//! via the `REVO_MS_CLIENT_ID` environment variable.
+//! via the `TINUX_MS_CLIENT_ID` environment variable.
 
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -24,7 +24,7 @@ const XSTS_AUTH: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const MC_LOGIN: &str = "https://api.minecraftservices.com/authentication/login_with_xbox";
 const MC_PROFILE: &str = "https://api.minecraftservices.com/minecraft/profile";
 const SCOPES: &str = "XboxLive.signin offline_access";
-const KEYRING_SERVICE: &str = "RevoLauncher";
+const KEYRING_SERVICE: &str = "TinuxLauncher";
 const KEYRING_USER: &str = "ms-refresh";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,18 +36,18 @@ pub struct Account {
     pub refresh_token: Option<String>,
 }
 
-/// Paste your Azure app's Application (client) ID here and recompile to ship Revo with
+/// Paste your Azure app's Application (client) ID here and recompile to ship Tinux with
 /// sign-in working out of the box for every user — this is exactly how Modrinth App,
 /// PrismLauncher, ATLauncher, etc. distribute their launchers. The id is **not** a
 /// secret: it's the launcher's public identity, paired with PKCE for safety. Users
 /// still sign in with their own Microsoft accounts; this id just tells Microsoft
 /// which app is asking.
 ///
-/// Leave as `None` and Revo falls back to env var → config.json (developer mode).
+/// Leave as `None` and Tinux falls back to env var → config.json (developer mode).
 const BAKED_CLIENT_ID: Option<&str> = Some("164bca05-6a7e-4142-990e-540a7aae3f18");
 
 pub fn client_id() -> Option<String> {
-    if let Ok(v) = std::env::var("REVO_MS_CLIENT_ID") {
+    if let Ok(v) = std::env::var("TINUX_MS_CLIENT_ID") {
         if !v.trim().is_empty() {
             return Some(v);
         }
@@ -65,7 +65,7 @@ pub async fn interactive_login() -> Result<Account> {
     let client_id = client_id().ok_or_else(|| {
         anyhow!(
             "Microsoft client id missing. Paste your Azure app's Application (client) ID \
-             into config.json (see the Accounts tab for the path) or set REVO_MS_CLIENT_ID."
+             into config.json (see the Accounts tab for the path) or set TINUX_MS_CLIENT_ID."
         )
     })?;
 
@@ -97,7 +97,7 @@ pub async fn interactive_login() -> Result<Account> {
     let code = wait_for_redirect(listener, &state).await?;
 
     let http = reqwest::Client::builder()
-        .user_agent("revo-launcher/0.1")
+        .user_agent("tinux-launcher/0.1")
         .build()?;
 
     let ms = exchange_code(&http, &client_id, &code, &redirect_uri, &verifier).await?;
@@ -113,12 +113,12 @@ pub async fn interactive_login() -> Result<Account> {
 
 #[allow(dead_code)]
 pub async fn try_silent_login() -> Result<Account> {
-    let client_id = client_id().context("REVO_MS_CLIENT_ID not set")?;
+    let client_id = client_id().context("TINUX_MS_CLIENT_ID not set")?;
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)?;
     let refresh = entry.get_password().context("no stored refresh token")?;
 
     let http = reqwest::Client::builder()
-        .user_agent("revo-launcher/0.1")
+        .user_agent("tinux-launcher/0.1")
         .build()?;
 
     let ms = refresh_ms(&http, &client_id, &refresh).await?;
