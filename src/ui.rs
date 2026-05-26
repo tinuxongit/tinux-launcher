@@ -1934,75 +1934,65 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
     });
     f.render_widget(block, area);
 
-    let mut y = inner.y;
-    let row = |yy: u16, w: u16| Rect::new(inner.x, yy, w, 1);
-
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled("Updates", theme::accent_bold())))
-            .style(theme::base()),
-        row(y, inner.width),
-    );
-    y += 1;
-    f.render_widget(
-        Paragraph::new("─".repeat(inner.width as usize))
-            .style(Style::default().fg(theme::BORDER).bg(theme::BG)),
-        row(y, inner.width),
-    );
-    y += 2;
-
-    let current_line = format!("Current version: v{}", env!("CARGO_PKG_VERSION"));
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("● ", Style::default().fg(theme::ACCENT)),
-            Span::styled(current_line, theme::base()),
-        ]))
-        .style(theme::base()),
-        row(y, inner.width),
-    );
-    y += 2;
-
-    let btn_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
+    // Two-column layout: Updates+Game on the left, Java+Maintenance on the right.
+    // Keeps everything inside 120x38 even with all sections expanded.
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(26),
-            Constraint::Length(2),
-            Constraint::Length(24),
-            Constraint::Min(0),
-        ])
-        .split(btn_row);
-    match app.update_status {
-        UpdateStatus::Checking => draw_disabled_button(f, cols[0], "Checking..."),
-        UpdateStatus::Downloading { .. } => draw_disabled_button(f, cols[0], "Downloading..."),
-        UpdateStatus::Ready { .. } => {
-            draw_button(f, app, cols[0], "Install & restart", Hit::InstallUpdateNow, true);
-        }
-        _ => {
-            draw_button(
-                f,
-                app,
-                cols[0],
-                "Check for updates",
-                Hit::CheckUpdatesButton,
-                true,
-            );
-        }
-    }
-    let show_releases_btn = matches!(
-        app.update_status,
-        UpdateStatus::Outdated(_) | UpdateStatus::UpToDate(_) | UpdateStatus::Failed(_)
-    );
-    if show_releases_btn {
-        draw_button(
-            f,
-            app,
-            cols[2],
-            "Open releases page",
-            Hit::OpenReleasesPage,
-            false,
+        .constraints([Constraint::Percentage(50), Constraint::Length(2), Constraint::Min(0)])
+        .split(inner);
+    let left = cols[0];
+    let right = cols[2];
+
+    // --- LEFT COLUMN: Updates + Game ---
+    let mut y = left.y;
+    let bottom_left = left.y + left.height;
+    let row = |yy: u16, x: u16, w: u16| Rect::new(x, yy, w, 1);
+
+    y = draw_section_header(f, "Updates", left, y);
+
+    if y + 1 <= bottom_left {
+        let current_line = format!("Current: v{}", env!("CARGO_PKG_VERSION"));
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("● ", Style::default().fg(theme::ACCENT)),
+                Span::styled(current_line, theme::base()),
+            ]))
+            .style(theme::base()),
+            row(y, left.x, left.width),
         );
+        y += 2;
     }
-    y += BUTTON_H + 1;
+
+    if y + BUTTON_H <= bottom_left {
+        let btn_row = Rect::new(left.x, y, left.width, BUTTON_H);
+        let bcols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(22),
+                Constraint::Length(1),
+                Constraint::Length(20),
+                Constraint::Min(0),
+            ])
+            .split(btn_row);
+        match app.update_status {
+            UpdateStatus::Checking => draw_disabled_button(f, bcols[0], "Checking..."),
+            UpdateStatus::Downloading { .. } => draw_disabled_button(f, bcols[0], "Downloading..."),
+            UpdateStatus::Ready { .. } => {
+                draw_button(f, app, bcols[0], "Install & restart", Hit::InstallUpdateNow, true);
+            }
+            _ => {
+                draw_button(f, app, bcols[0], "Check for updates", Hit::CheckUpdatesButton, true);
+            }
+        }
+        let show_releases_btn = matches!(
+            app.update_status,
+            UpdateStatus::Outdated(_) | UpdateStatus::UpToDate(_) | UpdateStatus::Failed(_)
+        );
+        if show_releases_btn {
+            draw_button(f, app, bcols[2], "Releases page", Hit::OpenReleasesPage, false);
+        }
+        y += BUTTON_H + 1;
+    }
 
     let (status_line, status_style) = match &app.update_status {
         UpdateStatus::Idle => (
@@ -2050,177 +2040,175 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(theme::RED).bg(theme::BG),
         ),
     };
-    let status_rect = Rect::new(inner.x, y, inner.width, 2);
-    f.render_widget(
-        Paragraph::new(Span::styled(status_line, status_style))
-            .style(theme::base())
-            .wrap(Wrap { trim: true }),
-        status_rect,
-    );
-    y += 3;
-
-    // --- Game section: RAM and data folder ---
-    y = draw_section_header(f, "Game", inner, y);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Max RAM: ", theme::dim()),
-            Span::styled(
-                format!("{} MB", app.max_ram_mb),
-                Style::default()
-                    .fg(theme::ACCENT_HI)
-                    .bg(theme::BG)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("    (range 512 – 32768)", theme::dim()),
-        ]))
-        .style(theme::base()),
-        Rect::new(inner.x, y, inner.width, 1),
-    );
-    y += 1;
-    let ram_btn_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
-    let ram_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(12),
-            Constraint::Length(2),
-            Constraint::Length(12),
-            Constraint::Length(4),
-            Constraint::Length(20),
-            Constraint::Min(0),
-        ])
-        .split(ram_btn_row);
-    draw_button(f, app, ram_cols[0], "–  512 MB", Hit::RamDecrease, false);
-    draw_button(f, app, ram_cols[2], "+  512 MB", Hit::RamIncrease, false);
-    draw_button(f, app, ram_cols[4], "Open data folder", Hit::OpenDataFolder, false);
-    y += BUTTON_H + 1;
-
-    // --- Java section ---
-    y = draw_section_header(f, "Java", inner, y);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            "Override path (leave blank to auto-detect). Path applies to all versions.",
-            theme::dim(),
-        ))
-        .style(theme::base())
-        .wrap(Wrap { trim: true }),
-        Rect::new(inner.x, y, inner.width, 1),
-    );
-    y += 1;
-    let jp_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
-    let jp_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(2), Constraint::Length(10)])
-        .split(jp_row);
-    let jp_label_owned: String = if app.java_path_input.is_empty() {
-        "(auto-detect)".to_string()
-    } else {
-        app.java_path_input.clone()
-    };
-    let jp_focused = app.focus == Focus::JavaPath;
-    draw_text_field(
-        f,
-        app,
-        jp_cols[0],
-        Hit::JavaPathField,
-        Focus::JavaPath,
-        " Java path ",
-        &jp_label_owned,
-        jp_focused,
-    );
-    if !app.java_path_input.is_empty() {
-        draw_button(f, app, jp_cols[2], "Clear", Hit::ClearJavaPath, false);
-    }
-    y += BUTTON_H + 1;
-
-    let label_for_version = app
-        .selected_modded_id()
-        .or_else(|| app.selected_version.clone())
-        .unwrap_or_else(|| "(no version selected)".to_string());
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Per-version override for ", theme::dim()),
-            Span::styled(
-                label_for_version,
-                Style::default().fg(theme::FG).bg(theme::BG),
-            ),
-        ]))
-        .style(theme::base()),
-        Rect::new(inner.x, y, inner.width, 1),
-    );
-    y += 1;
-    let jpv_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
-    let jpv_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(2), Constraint::Length(10)])
-        .split(jpv_row);
-    let pv_label_owned: String = if app.focus == Focus::JavaPathForVersion {
-        app.java_path_for_version_input.clone()
-    } else {
-        let id = app
-            .selected_modded_id()
-            .or_else(|| app.selected_version.clone());
-        match id.as_deref().and_then(|i| app.java_path_per_version.get(i)) {
-            Some(v) if !v.is_empty() => v.clone(),
-            _ => "(none)".to_string(),
+    // Compact update status (one line, no wrap).
+    if y + 1 <= bottom_left {
+        let max_len = left.width as usize;
+        let mut s = status_line;
+        if s.chars().count() > max_len {
+            s = s.chars().take(max_len.saturating_sub(1)).collect::<String>() + "…";
         }
-    };
-    let pv_focused = app.focus == Focus::JavaPathForVersion;
-    draw_text_field(
-        f,
-        app,
-        jpv_cols[0],
-        Hit::JavaPathForVersionField,
-        Focus::JavaPathForVersion,
-        " Java path (this version) ",
-        &pv_label_owned,
-        pv_focused,
-    );
-    let id_for_clear = app
-        .selected_modded_id()
-        .or_else(|| app.selected_version.clone());
-    let has_pv_override = id_for_clear
-        .as_deref()
-        .and_then(|i| app.java_path_per_version.get(i))
-        .map(|v| !v.is_empty())
-        .unwrap_or(false);
-    if has_pv_override {
-        draw_button(f, app, jpv_cols[2], "Clear", Hit::ClearJavaPathForVersion, false);
+        f.render_widget(
+            Paragraph::new(Span::styled(s, status_style)).style(theme::base()),
+            row(y, left.x, left.width),
+        );
+        y += 2;
     }
-    y += BUTTON_H + 1;
 
-    // --- Maintenance section ---
-    y = draw_section_header(f, "Maintenance", inner, y);
-    let verify_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
-    let verify_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(22), Constraint::Min(0)])
-        .split(verify_row);
-    if app.integrity_in_progress {
-        draw_disabled_button(f, verify_cols[0], "Verifying...");
-    } else {
-        draw_button(
+    // --- Game section: RAM + Open data folder ---
+    if y + 2 <= bottom_left {
+        y = draw_section_header(f, "Game", left, y);
+    }
+    if y + 1 <= bottom_left {
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("Max RAM: ", theme::dim()),
+                Span::styled(
+                    format!("{} MB", app.max_ram_mb),
+                    Style::default()
+                        .fg(theme::ACCENT_HI)
+                        .bg(theme::BG)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("   (512 – 32768)", theme::dim()),
+            ]))
+            .style(theme::base()),
+            row(y, left.x, left.width),
+        );
+        y += 1;
+    }
+    if y + BUTTON_H <= bottom_left {
+        let ram_btn_row = Rect::new(left.x, y, left.width, BUTTON_H);
+        let ram_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(12),
+                Constraint::Length(1),
+                Constraint::Length(12),
+                Constraint::Length(2),
+                Constraint::Length(18),
+                Constraint::Min(0),
+            ])
+            .split(ram_btn_row);
+        draw_button(f, app, ram_cols[0], "−  512 MB", Hit::RamDecrease, false);
+        draw_button(f, app, ram_cols[2], "+  512 MB", Hit::RamIncrease, false);
+        draw_button(f, app, ram_cols[4], "Open data folder", Hit::OpenDataFolder, false);
+    }
+
+    // --- RIGHT COLUMN: Java + Maintenance ---
+    let mut y = right.y;
+    let bottom_right = right.y + right.height;
+
+    if y + 2 <= bottom_right {
+        y = draw_section_header(f, "Java", right, y);
+    }
+    if y + BUTTON_H <= bottom_right {
+        let jp_row = Rect::new(right.x, y, right.width, BUTTON_H);
+        let jp_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(1), Constraint::Length(9)])
+            .split(jp_row);
+        let jp_label_owned: String = if app.java_path_input.is_empty() {
+            "(auto-detect)".to_string()
+        } else {
+            app.java_path_input.clone()
+        };
+        let jp_focused = app.focus == Focus::JavaPath;
+        draw_text_field(
             f,
             app,
-            verify_cols[0],
-            "Verify integrity",
-            Hit::VerifyIntegrityButton,
-            false,
+            jp_cols[0],
+            Hit::JavaPathField,
+            Focus::JavaPath,
+            " Java path (all versions) ",
+            &jp_label_owned,
+            jp_focused,
+        );
+        if !app.java_path_input.is_empty() {
+            draw_button(f, app, jp_cols[2], "Clear", Hit::ClearJavaPath, false);
+        }
+        y += BUTTON_H + 1;
+    }
+    if y + BUTTON_H <= bottom_right {
+        let jpv_row = Rect::new(right.x, y, right.width, BUTTON_H);
+        let jpv_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(1), Constraint::Length(9)])
+            .split(jpv_row);
+        let pv_label_owned: String = if app.focus == Focus::JavaPathForVersion {
+            app.java_path_for_version_input.clone()
+        } else {
+            let id = app
+                .selected_modded_id()
+                .or_else(|| app.selected_version.clone());
+            match id.as_deref().and_then(|i| app.java_path_per_version.get(i)) {
+                Some(v) if !v.is_empty() => v.clone(),
+                _ => "(none)".to_string(),
+            }
+        };
+        let pv_focused = app.focus == Focus::JavaPathForVersion;
+        let pv_title = match app
+            .selected_modded_id()
+            .or_else(|| app.selected_version.clone())
+        {
+            Some(id) if id.chars().count() < 24 => format!(" Java path · {id} "),
+            _ => " Java path (this version) ".to_string(),
+        };
+        draw_text_field(
+            f,
+            app,
+            jpv_cols[0],
+            Hit::JavaPathForVersionField,
+            Focus::JavaPathForVersion,
+            &pv_title,
+            &pv_label_owned,
+            pv_focused,
+        );
+        let id_for_clear = app
+            .selected_modded_id()
+            .or_else(|| app.selected_version.clone());
+        let has_pv_override = id_for_clear
+            .as_deref()
+            .and_then(|i| app.java_path_per_version.get(i))
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        if has_pv_override {
+            draw_button(f, app, jpv_cols[2], "Clear", Hit::ClearJavaPathForVersion, false);
+        }
+        y += BUTTON_H + 1;
+    }
+
+    if y + 2 <= bottom_right {
+        y = draw_section_header(f, "Maintenance", right, y);
+    }
+    if y + BUTTON_H <= bottom_right {
+        let verify_row = Rect::new(right.x, y, right.width, BUTTON_H);
+        let verify_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(22), Constraint::Min(0)])
+            .split(verify_row);
+        if app.integrity_in_progress {
+            draw_disabled_button(f, verify_cols[0], "Verifying...");
+        } else {
+            draw_button(
+                f,
+                app,
+                verify_cols[0],
+                "Verify integrity",
+                Hit::VerifyIntegrityButton,
+                false,
+            );
+        }
+        // Compact one-line hint to the right of the button.
+        let mid = verify_cols[1].y + verify_cols[1].height / 2;
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "Re-hashes every file & repairs corruption.",
+                theme::dim(),
+            ))
+            .style(theme::base()),
+            Rect::new(verify_cols[1].x + 1, mid, verify_cols[1].width.saturating_sub(1), 1),
         );
     }
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            "Re-hashes every file for the selected version and re-downloads anything that's missing or corrupted.",
-            theme::dim(),
-        ))
-        .style(theme::base())
-        .wrap(Wrap { trim: true }),
-        Rect::new(
-            verify_cols[1].x + 1,
-            verify_cols[1].y,
-            verify_cols[1].width.saturating_sub(1),
-            BUTTON_H,
-        ),
-    );
 }
 
 fn draw_section_header(f: &mut Frame, title: &str, inner: Rect, mut y: u16) -> u16 {
