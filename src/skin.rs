@@ -11,9 +11,46 @@ use serde::Deserialize;
 const PREVIEW_W: u32 = 16;
 const PREVIEW_H: u32 = 32;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkinView {
+    Front,
+    Right,
+    Back,
+    Left,
+}
+
+impl SkinView {
+    pub fn label(self) -> &'static str {
+        match self {
+            SkinView::Front => "Front",
+            SkinView::Right => "Right",
+            SkinView::Back => "Back",
+            SkinView::Left => "Left",
+        }
+    }
+    pub fn next(self) -> Self {
+        match self {
+            SkinView::Front => SkinView::Right,
+            SkinView::Right => SkinView::Back,
+            SkinView::Back => SkinView::Left,
+            SkinView::Left => SkinView::Front,
+        }
+    }
+    pub fn prev(self) -> Self {
+        match self {
+            SkinView::Front => SkinView::Left,
+            SkinView::Right => SkinView::Front,
+            SkinView::Back => SkinView::Right,
+            SkinView::Left => SkinView::Back,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SkinPreview {
-    pixels: Vec<[u8; 4]>,
+    src: Vec<[u8; 4]>,
+    src_w: u32,
+    src_h: u32,
 }
 
 impl SkinPreview {
@@ -24,11 +61,104 @@ impl SkinPreview {
         PREVIEW_W as u16
     }
 
-    fn px(&self, x: u32, y: u32) -> [u8; 4] {
-        if x >= PREVIEW_W || y >= PREVIEW_H {
+    fn src_px(&self, x: u32, y: u32) -> [u8; 4] {
+        if x >= self.src_w || y >= self.src_h {
             return [0, 0, 0, 0];
         }
-        self.pixels[(y * PREVIEW_W + x) as usize]
+        self.src[(y * self.src_w + x) as usize]
+    }
+
+    fn compose(&self, view: SkinView) -> Vec<[u8; 4]> {
+        let mut out = vec![[0u8; 4]; (PREVIEW_W * PREVIEW_H) as usize];
+        let put = |out: &mut [[u8; 4]], x: u32, y: u32, c: [u8; 4]| {
+            if x < PREVIEW_W && y < PREVIEW_H && c[3] >= 128 {
+                out[(y * PREVIEW_W + x) as usize] = [c[0], c[1], c[2], 255];
+            }
+        };
+        let blit = |out: &mut [[u8; 4]],
+                    sx: u32,
+                    sy: u32,
+                    sw: u32,
+                    sh: u32,
+                    dx: u32,
+                    dy: u32,
+                    mirror: bool| {
+            for j in 0..sh {
+                for i in 0..sw {
+                    let src_i = if mirror { sw - 1 - i } else { i };
+                    put(out, dx + i, dy + j, self.src_px(sx + src_i, sy + j));
+                }
+            }
+        };
+
+        // (sx, sy, sw, sh, dx, dy, mirror)
+        let base: &[(u32, u32, u32, u32, u32, u32, bool)] = match view {
+            SkinView::Front => &[
+                (8, 8, 8, 8, 4, 0, false),       // head
+                (20, 20, 8, 12, 4, 8, false),    // body
+                (44, 20, 4, 12, 0, 8, false),    // right arm
+                (36, 52, 4, 12, 12, 8, false),   // left arm
+                (4, 20, 4, 12, 4, 20, false),    // right leg
+                (20, 52, 4, 12, 8, 20, false),   // left leg
+            ],
+            SkinView::Back => &[
+                (24, 8, 8, 8, 4, 0, false),      // head back
+                (32, 20, 8, 12, 4, 8, false),    // body back
+                (52, 20, 4, 12, 12, 8, false),   // right arm back (now on viewer right)
+                (44, 52, 4, 12, 0, 8, false),    // left arm back
+                (12, 20, 4, 12, 8, 20, false),   // right leg back
+                (28, 52, 4, 12, 4, 20, false),   // left leg back
+            ],
+            SkinView::Right => &[
+                (0, 8, 8, 8, 4, 0, false),       // head right side
+                (16, 20, 4, 12, 6, 8, false),    // body right side
+                (40, 20, 4, 12, 6, 8, false),    // right arm right side (overlaps body)
+                (0, 20, 4, 12, 6, 20, false),    // right leg right side
+            ],
+            SkinView::Left => &[
+                (16, 8, 8, 8, 4, 0, false),      // head left side
+                (28, 20, 4, 12, 6, 8, false),    // body left side
+                (40, 52, 4, 12, 6, 8, false),    // left arm left side
+                (16, 52, 4, 12, 6, 20, false),   // left leg left side
+            ],
+        };
+        let overlay: &[(u32, u32, u32, u32, u32, u32, bool)] = match view {
+            SkinView::Front => &[
+                (40, 8, 8, 8, 4, 0, false),
+                (20, 36, 8, 12, 4, 8, false),
+                (44, 36, 4, 12, 0, 8, false),
+                (52, 52, 4, 12, 12, 8, false),
+                (4, 36, 4, 12, 4, 20, false),
+                (4, 52, 4, 12, 8, 20, false),
+            ],
+            SkinView::Back => &[
+                (56, 8, 8, 8, 4, 0, false),
+                (32, 36, 8, 12, 4, 8, false),
+                (52, 36, 4, 12, 12, 8, false),
+                (60, 52, 4, 12, 0, 8, false),
+                (12, 36, 4, 12, 8, 20, false),
+                (12, 52, 4, 12, 4, 20, false),
+            ],
+            SkinView::Right => &[
+                (32, 8, 8, 8, 4, 0, false),
+                (16, 36, 4, 12, 6, 8, false),
+                (40, 36, 4, 12, 6, 8, false),
+                (0, 36, 4, 12, 6, 20, false),
+            ],
+            SkinView::Left => &[
+                (48, 8, 8, 8, 4, 0, false),
+                (28, 36, 4, 12, 6, 8, false),
+                (56, 52, 4, 12, 6, 8, false),
+                (0, 52, 4, 12, 6, 20, false),
+            ],
+        };
+        for &(sx, sy, sw, sh, dx, dy, mir) in base {
+            blit(&mut out, sx, sy, sw, sh, dx, dy, mir);
+        }
+        for &(sx, sy, sw, sh, dx, dy, mir) in overlay {
+            blit(&mut out, sx, sy, sw, sh, dx, dy, mir);
+        }
+        out
     }
 }
 
@@ -140,82 +270,40 @@ fn decode_and_compose(bytes: &[u8]) -> Result<SkinPreview> {
         other => anyhow::bail!("unsupported skin color type: {other:?}"),
     };
 
-    let pixel = |x: u32, y: u32| -> [u8; 4] {
-        if x >= w || y >= h {
-            return [0, 0, 0, 0];
-        }
-        let i = ((y * w + x) as usize) * stride;
-        let r = raw[i];
-        let g = raw[i + 1];
-        let b = raw[i + 2];
-        let a = if stride == 4 { raw[i + 3] } else { 255 };
-        [r, g, b, a]
-    };
-
-    let mut out = vec![[0u8, 0, 0, 0]; (PREVIEW_W * PREVIEW_H) as usize];
-    let put = |out: &mut [[u8; 4]], x: u32, y: u32, c: [u8; 4]| {
-        if x < PREVIEW_W && y < PREVIEW_H {
-            let idx = (y * PREVIEW_W + x) as usize;
-            if c[3] >= 128 {
-                out[idx] = [c[0], c[1], c[2], 255];
-            } else if out[idx][3] == 0 && c[3] > 0 {
-                out[idx] = [c[0], c[1], c[2], 255];
-            }
-        }
-    };
-
-    // (src_x, src_y, src_w, src_h, dst_x, dst_y)
-    // Base layer
-    let base = [
-        (8, 8, 8, 8, 4, 0),      // head
-        (20, 20, 8, 12, 4, 8),   // body
-        (44, 20, 4, 12, 0, 8),   // right arm (viewer left)
-        (36, 52, 4, 12, 12, 8),  // left arm (viewer right) — 1.8+
-        (4, 20, 4, 12, 4, 20),   // right leg
-        (20, 52, 4, 12, 8, 20),  // left leg — 1.8+
-    ];
-    let overlay = [
-        (40, 8, 8, 8, 4, 0),     // head overlay (hat)
-        (20, 36, 8, 12, 4, 8),   // body overlay (jacket)
-        (44, 36, 4, 12, 0, 8),   // right arm overlay
-        (52, 52, 4, 12, 12, 8),  // left arm overlay
-        (4, 36, 4, 12, 4, 20),   // right leg overlay
-        (4, 52, 4, 12, 8, 20),   // left leg overlay
-    ];
-
-    for &(sx, sy, sw, sh, dx, dy) in base.iter() {
-        for j in 0..sh {
-            for i in 0..sw {
-                put(&mut out, dx + i, dy + j, pixel(sx + i, sy + j));
-            }
+    let mut src = Vec::with_capacity((w * h) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let i = ((y * w + x) as usize) * stride;
+            let r = raw[i];
+            let g = raw[i + 1];
+            let b = raw[i + 2];
+            let a = if stride == 4 { raw[i + 3] } else { 255 };
+            src.push([r, g, b, a]);
         }
     }
-    for &(sx, sy, sw, sh, dx, dy) in overlay.iter() {
-        for j in 0..sh {
-            for i in 0..sw {
-                let c = pixel(sx + i, sy + j);
-                if c[3] > 0 {
-                    put(&mut out, dx + i, dy + j, c);
-                }
-            }
-        }
-    }
-
-    Ok(SkinPreview { pixels: out })
+    Ok(SkinPreview { src, src_w: w, src_h: h })
 }
 
 pub struct SkinPreviewWidget<'a> {
     pub preview: &'a SkinPreview,
+    pub view: SkinView,
 }
 
 impl<'a> Widget for SkinPreviewWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let max_cx = (self.preview.cols()).min(area.width);
-        let max_cy = (self.preview.rows()).min(area.height);
+        let pixels = self.preview.compose(self.view);
+        let px = |x: u32, y: u32| -> [u8; 4] {
+            if x >= PREVIEW_W || y >= PREVIEW_H {
+                return [0, 0, 0, 0];
+            }
+            pixels[(y * PREVIEW_W + x) as usize]
+        };
+        let max_cx = (PREVIEW_W as u16).min(area.width);
+        let max_cy = ((PREVIEW_H / 2) as u16).min(area.height);
         for cy in 0..max_cy {
             for cx in 0..max_cx {
-                let top = self.preview.px(cx as u32, (cy * 2) as u32);
-                let bot = self.preview.px(cx as u32, (cy * 2 + 1) as u32);
+                let top = px(cx as u32, (cy * 2) as u32);
+                let bot = px(cx as u32, (cy * 2 + 1) as u32);
                 let cell = &mut buf[(area.x + cx, area.y + cy)];
                 match (top[3] > 0, bot[3] > 0) {
                     (true, true) => {

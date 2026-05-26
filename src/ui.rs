@@ -882,11 +882,60 @@ fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
             let cols = preview.cols();
             let rows = preview.rows();
             let x = inner.x + inner.width.saturating_sub(cols) / 2;
-            let y = inner.y + inner.height.saturating_sub(rows + 1) / 2;
+            let y = inner.y + inner.height.saturating_sub(rows + 2) / 2;
             let preview_rect = Rect::new(x, y, cols.min(inner.width), rows.min(inner.height));
-            f.render_widget(SkinPreviewWidget { preview }, preview_rect);
+            f.render_widget(
+                SkinPreviewWidget {
+                    preview,
+                    view: app.skin_view,
+                },
+                preview_rect,
+            );
 
-            if pending && inner.height > rows + 1 {
+            // Rotation arrows + view label below.
+            let mid_y = preview_rect.y + preview_rect.height / 2;
+            if preview_rect.x > inner.x {
+                let left_rect = Rect::new(inner.x, mid_y, 2, 1);
+                let hovered = app.hover == Some(Hit::RotateSkinLeft);
+                let style = if hovered {
+                    Style::default()
+                        .fg(theme::ACCENT_HI)
+                        .bg(theme::BG)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme::ACCENT).bg(theme::BG)
+                };
+                f.render_widget(Paragraph::new("◀").style(style), left_rect);
+                app.click_regions.push((left_rect, Hit::RotateSkinLeft));
+            }
+            let right_x = preview_rect.x + preview_rect.width;
+            if right_x < inner.x + inner.width {
+                let right_rect = Rect::new(right_x, mid_y, 2, 1);
+                let hovered = app.hover == Some(Hit::RotateSkinRight);
+                let style = if hovered {
+                    Style::default()
+                        .fg(theme::ACCENT_HI)
+                        .bg(theme::BG)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme::ACCENT).bg(theme::BG)
+                };
+                f.render_widget(Paragraph::new(" ▶").style(style), right_rect);
+                app.click_regions.push((right_rect, Hit::RotateSkinRight));
+            }
+
+            let label_y = preview_rect.y + rows;
+            if label_y < inner.y + inner.height {
+                let label_rect = Rect::new(inner.x, label_y, inner.width, 1);
+                f.render_widget(
+                    Paragraph::new(app.skin_view.label())
+                        .style(theme::dim())
+                        .alignment(Alignment::Center),
+                    label_rect,
+                );
+            }
+
+            if pending && inner.height > rows + 2 {
                 let hint_y = preview_rect.y + rows + 1;
                 let hint_rect = Rect::new(inner.x, hint_y, inner.width, 1);
                 let hovered = app.hover == Some(Hit::ClearPreviewButton);

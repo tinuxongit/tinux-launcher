@@ -4,7 +4,7 @@ use crate::java::{self, JavaInstall};
 use crate::manifest::{self, ManifestVersion, VersionKind, VersionManifest};
 use crate::news::{self, Article, NewsEntry};
 use crate::paths::Paths;
-use crate::skin::SkinPreview;
+use crate::skin::{SkinPreview, SkinView};
 use ratatui::layout::Rect;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -104,6 +104,7 @@ pub struct App {
     pub skin_pending_loading: bool,
     pub skin_url_input: String,
     pub skin_model: SkinModel,
+    pub skin_view: SkinView,
     pub skin_busy: bool,
     pub skin_error: Option<String>,
 
@@ -178,6 +179,7 @@ impl App {
             skin_pending_loading: false,
             skin_url_input: saved_skin_url,
             skin_model: SkinModel::Classic,
+            skin_view: SkinView::Front,
             skin_busy: false,
             skin_error: None,
             logs: VecDeque::with_capacity(LOG_CAPACITY),

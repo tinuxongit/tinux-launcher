@@ -39,6 +39,8 @@ pub enum Hit {
     ResetSkinButton,
     PreviewSkinButton,
     ClearPreviewButton,
+    RotateSkinLeft,
+    RotateSkinRight,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

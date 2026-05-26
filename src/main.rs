@@ -59,6 +59,16 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // Ask the host terminal for a comfortable size if it's smaller.
+    // Supported by Windows Terminal, iTerm2, kitty, WezTerm, xterm; silently ignored
+    // by Alacritty and others — no harm if the request bounces.
+    if let Ok((cols, rows)) = crossterm::terminal::size() {
+        let want_cols = cols.max(120);
+        let want_rows = rows.max(38);
+        if want_cols != cols || want_rows != rows {
+            let _ = execute!(stdout, crossterm::terminal::SetSize(want_cols, want_rows));
+        }
+    }
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
@@ -380,6 +390,8 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             app.skin_pending_preview = None;
             app.status_message = "Preview cleared".into();
         }
+        Hit::RotateSkinLeft => app.skin_view = app.skin_view.prev(),
+        Hit::RotateSkinRight => app.skin_view = app.skin_view.next(),
     }
 }
 
