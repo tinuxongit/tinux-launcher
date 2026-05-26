@@ -285,17 +285,6 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         Hit::CopyLineButton => copy_selected_log(app),
         Hit::CopyAllButton => copy_all_logs(app),
         Hit::OpenConfigButton => open_config(app),
-        Hit::ScrollUp => match app.tab {
-            Tab::Versions => app.list_offset = app.list_offset.saturating_sub(5),
-            Tab::Logs => app.log_offset = app.log_offset.saturating_add(5),
-            _ => {}
-        },
-        Hit::ScrollDown => match app.tab {
-            Tab::Versions => app.list_offset = app.list_offset.saturating_add(5),
-            Tab::Logs => app.log_offset = app.log_offset.saturating_sub(5),
-            _ => {}
-        },
-        Hit::SettingsButton | Hit::CloseModal => {}
     }
 }
 

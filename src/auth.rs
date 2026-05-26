@@ -111,26 +111,6 @@ pub async fn interactive_login() -> Result<Account> {
     Ok(account)
 }
 
-#[allow(dead_code)]
-pub async fn try_silent_login() -> Result<Account> {
-    let client_id = client_id().context("TINUX_MS_CLIENT_ID not set")?;
-    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)?;
-    let refresh = entry.get_password().context("no stored refresh token")?;
-
-    let http = reqwest::Client::builder()
-        .user_agent("tinux-launcher/0.1")
-        .build()?;
-
-    let ms = refresh_ms(&http, &client_id, &refresh).await?;
-    let account = ms_to_account(&http, &ms).await?;
-
-    if let Some(rt) = &account.refresh_token {
-        let _ = entry.set_password(rt);
-    }
-
-    Ok(account)
-}
-
 pub fn logout() {
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
         let _ = entry.delete_credential();
@@ -298,25 +278,6 @@ async fn exchange_code(
         .await?
         .error_for_status()
         .context("exchanging OAuth code")?
-        .json::<MsToken>()
-        .await?;
-    Ok(res)
-}
-
-#[allow(dead_code)]
-async fn refresh_ms(http: &reqwest::Client, client_id: &str, refresh: &str) -> Result<MsToken> {
-    let res = http
-        .post(format!("{AUTH_BASE}/token"))
-        .form(&[
-            ("client_id", client_id),
-            ("scope", SCOPES),
-            ("refresh_token", refresh),
-            ("grant_type", "refresh_token"),
-        ])
-        .send()
-        .await?
-        .error_for_status()
-        .context("refreshing MS token")?
         .json::<MsToken>()
         .await?;
     Ok(res)

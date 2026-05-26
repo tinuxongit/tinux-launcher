@@ -16,11 +16,9 @@ pub async fn do_install(
     let version_id = entry.id.clone();
     let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
     let app_tx = tx.clone();
-    let v_id_for_progress = version_id.clone();
     tokio::spawn(async move {
         while let Some(ev) = prog_rx.recv().await {
             let _ = app_tx.send(WorkerMsg::InstallProgress {
-                version: v_id_for_progress.clone(),
                 done: ev.done,
                 total: ev.total,
                 what: ev.what,
@@ -52,11 +50,9 @@ pub async fn do_install_and_launch(
     let version_id = entry.id.clone();
     let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
     let app_tx = tx.clone();
-    let v_id_for_progress = version_id.clone();
     tokio::spawn(async move {
         while let Some(ev) = prog_rx.recv().await {
             let _ = app_tx.send(WorkerMsg::InstallProgress {
-                version: v_id_for_progress.clone(),
                 done: ev.done,
                 total: ev.total,
                 what: ev.what,

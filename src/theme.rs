@@ -1,12 +1,9 @@
-#![allow(dead_code)]
-
 use ratatui::style::{Color, Modifier, Style};
 
 pub const BG: Color = Color::Rgb(18, 20, 24);
 pub const PANEL: Color = Color::Rgb(28, 32, 38);
 pub const PANEL_HI: Color = Color::Rgb(40, 46, 54);
 pub const BORDER: Color = Color::Rgb(60, 68, 78);
-pub const BORDER_HI: Color = Color::Rgb(120, 200, 140);
 
 pub const FG: Color = Color::Rgb(220, 224, 230);
 pub const FG_DIM: Color = Color::Rgb(140, 148, 160);
@@ -17,10 +14,6 @@ pub const RED: Color = Color::Rgb(220, 96, 96);
 
 pub fn base() -> Style {
     Style::default().fg(FG).bg(BG)
-}
-
-pub fn panel() -> Style {
-    Style::default().fg(FG).bg(PANEL)
 }
 
 pub fn dim() -> Style {

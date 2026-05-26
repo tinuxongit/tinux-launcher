@@ -2,7 +2,6 @@ use crate::auth::Account;
 use crate::manifest::VersionManifest;
 use std::sync::Arc;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Hit {
     Tab(Tab),
@@ -14,10 +13,6 @@ pub enum Hit {
     FilterReleases,
     FilterSnapshots,
     FilterOld,
-    SettingsButton,
-    ScrollUp,
-    ScrollDown,
-    CloseModal,
     OfflineNameField,
     LogRow(usize),
     CopyLineButton,
@@ -54,7 +49,6 @@ pub enum WorkerMsg {
     AuthSucceeded(Account),
     AuthFailed(String),
     InstallProgress {
-        version: String,
         done: u64,
         total: u64,
         what: String,

@@ -49,7 +49,7 @@ If you want to use your own Azure app instead (e.g. you're forking and shipping 
 
 ## Data layout
 
-Saved under the OS data dir (`%APPDATA%\revo\RevoLauncher` on Windows; equivalent paths on macOS / Linux):
+Saved under the OS data dir (`%APPDATA%\tinux\TinuxLauncher` on Windows; equivalent paths on macOS / Linux):
 
 ```
 config.json                # optional: { "ms_client_id": "<guid>" }

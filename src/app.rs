@@ -19,8 +19,6 @@ pub enum VersionFilter {
 
 #[derive(Debug)]
 pub struct InstallState {
-    #[allow(dead_code)]
-    pub version_id: String,
     pub done: u64,
     pub total: u64,
     pub what: String,
@@ -197,8 +195,8 @@ impl App {
                 self.auth_error = Some(e.clone());
                 self.status_message = format!("Sign-in failed: {e}");
             }
-            WorkerMsg::InstallProgress { version, done, total, what } => {
-                self.install = Some(InstallState { version_id: version, done, total, what });
+            WorkerMsg::InstallProgress { done, total, what } => {
+                self.install = Some(InstallState { done, total, what });
             }
             WorkerMsg::InstallDone(v) => {
                 self.install = None;

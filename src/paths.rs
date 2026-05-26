@@ -17,11 +17,7 @@ pub struct Paths {
 
 impl Paths {
     pub fn resolve() -> Result<Self> {
-        // Note: the on-disk path keeps the legacy "revo / RevoLauncher" segments even
-        // though the launcher rebranded to Tinux. Renaming would orphan every user's
-        // existing version / library / asset cache (potentially gigabytes). Cheap to
-        // keep, expensive to migrate.
-        let dirs = ProjectDirs::from("dev", "revo", "RevoLauncher")
+        let dirs = ProjectDirs::from("dev", "tinux", "TinuxLauncher")
             .context("could not resolve project directories")?;
         let root = dirs.data_dir().to_path_buf();
         let assets = root.join("assets");
