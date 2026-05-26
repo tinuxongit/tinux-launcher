@@ -53,6 +53,13 @@ async fn main() -> Result<()> {
     app::spawn_fabric_meta_fetch(app.client.clone(), worker_tx.clone());
     app::spawn_modrinth_categories_fetch(app.client.clone(), worker_tx.clone());
     update::spawn_check(app.client.clone(), worker_tx.clone());
+    // If the user has previously set an offline skin URL/username, render its
+    // preview right away so the Profile tab isn't empty.
+    app::spawn_offline_skin_preview(
+        app.client.clone(),
+        worker_tx.clone(),
+        app.skin_url_input.clone(),
+    );
 
     let (mut terminal, original_size) = setup_terminal()?;
     terminal.clear()?;

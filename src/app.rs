@@ -871,12 +871,17 @@ impl App {
             }
             WorkerMsg::VerifyDone { version, checked, repaired, missing } => {
                 self.integrity_in_progress = false;
+                // The verify worker shares the InstallProgress event stream with
+                // installs; clear it so the Play tab stops showing "Verifying..."
+                // and its progress bar after we're done.
+                self.install = None;
                 self.status_message = format!(
                     "Verify {version}: {checked} files checked, {repaired} re-fetched, {missing} still missing"
                 );
             }
             WorkerMsg::VerifyFailed(e) => {
                 self.integrity_in_progress = false;
+                self.install = None;
                 self.status_message = format!("Verify failed: {e}");
             }
         }
@@ -937,6 +942,32 @@ pub fn spawn_manifest_fetch(
             Err(e) => {
                 let _ = tx.send(WorkerMsg::ManifestFailed(format!("{e:#}")));
             }
+        }
+    });
+}
+
+pub fn spawn_offline_skin_preview(
+    client: reqwest::Client,
+    tx: UnboundedSender<WorkerMsg>,
+    input: String,
+) {
+    let input = input.trim().to_string();
+    if input.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        let url = match crate::skin::resolve_skin_url(&client, &input).await {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::warn!("offline skin resolve failed: {e}");
+                return;
+            }
+        };
+        match crate::skin::fetch_preview(&client, &url).await {
+            Ok(p) => {
+                let _ = tx.send(WorkerMsg::SkinPreviewLoaded(p));
+            }
+            Err(e) => tracing::warn!("offline skin preview fetch failed: {e}"),
         }
     });
 }
