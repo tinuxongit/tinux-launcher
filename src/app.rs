@@ -2,11 +2,14 @@ use crate::auth::Account;
 use crate::event::{Hit, InstallKind, Tab, WorkerMsg};
 use crate::java::{self, JavaInstall};
 use crate::manifest::{self, ManifestVersion, VersionKind, VersionManifest};
+use crate::modrinth::SearchHit;
 use crate::news::{self, Article, NewsEntry};
 use crate::paths::Paths;
 use crate::skin::{SkinPreview, SkinView};
+use crate::update::{self, UpdateInfo};
 use ratatui::layout::Rect;
 use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -17,6 +20,44 @@ pub enum VersionFilter {
     Releases,
     Snapshots,
     Old,
+    Modded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModLoader {
+    Fabric,
+}
+
+impl ModLoader {
+    pub fn label(self) -> &'static str {
+        match self {
+            ModLoader::Fabric => "Fabric",
+        }
+    }
+
+    pub fn modrinth_key(self) -> &'static str {
+        match self {
+            ModLoader::Fabric => "fabric",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum UpdateStatus {
+    Idle,
+    Checking,
+    UpToDate(String),
+    Outdated(UpdateInfo),
+    Downloading {
+        info: UpdateInfo,
+        done: u64,
+        total: u64,
+    },
+    Ready {
+        info: UpdateInfo,
+        new_exe: PathBuf,
+    },
+    Failed(String),
 }
 
 #[derive(Debug)]
@@ -39,6 +80,7 @@ pub enum Focus {
     None,
     OfflineName,
     SkinUrl,
+    ModSearch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +164,22 @@ pub struct App {
     pub worker_tx: UnboundedSender<WorkerMsg>,
 
     pub last_size: Rect,
+
+    pub update_status: UpdateStatus,
+    pub update_modal_dismissed: bool,
+
+    pub loader: ModLoader,
+    pub fabric_loaders: Vec<String>,
+    pub fabric_mc_versions: Vec<String>,
+
+    pub mod_browser_open: bool,
+    pub mod_search_query: String,
+    pub mod_search_results: Vec<SearchHit>,
+    pub mod_search_loading: bool,
+    pub mod_search_error: Option<String>,
+    pub mod_search_offset: usize,
+    pub mod_installing: Option<String>,
+    pub installed_mods: Vec<String>,
 }
 
 impl App {
@@ -192,6 +250,19 @@ impl App {
             selected_log_range: None,
             worker_tx,
             last_size: Rect::default(),
+            update_status: UpdateStatus::Idle,
+            update_modal_dismissed: false,
+            loader: ModLoader::Fabric,
+            fabric_loaders: Vec::new(),
+            fabric_mc_versions: Vec::new(),
+            mod_browser_open: false,
+            mod_search_query: String::new(),
+            mod_search_results: Vec::new(),
+            mod_search_loading: false,
+            mod_search_error: None,
+            mod_search_offset: 0,
+            mod_installing: None,
+            installed_mods: Vec::new(),
         }
     }
 
@@ -211,14 +282,78 @@ impl App {
 
     pub fn visible_versions(&self) -> Vec<&ManifestVersion> {
         let Some(m) = &self.manifest else { return Vec::new() };
-        m.versions
-            .iter()
-            .filter(|v| match self.filter {
-                VersionFilter::Releases => v.kind == VersionKind::Release,
-                VersionFilter::Snapshots => v.kind == VersionKind::Snapshot,
-                VersionFilter::Old => matches!(v.kind, VersionKind::OldBeta | VersionKind::OldAlpha),
+        match self.filter {
+            VersionFilter::Releases => m
+                .versions
+                .iter()
+                .filter(|v| v.kind == VersionKind::Release)
+                .collect(),
+            VersionFilter::Snapshots => m
+                .versions
+                .iter()
+                .filter(|v| v.kind == VersionKind::Snapshot)
+                .collect(),
+            VersionFilter::Old => m
+                .versions
+                .iter()
+                .filter(|v| matches!(v.kind, VersionKind::OldBeta | VersionKind::OldAlpha))
+                .collect(),
+            VersionFilter::Modded => {
+                if self.fabric_mc_versions.is_empty() {
+                    m.versions
+                        .iter()
+                        .filter(|v| v.kind == VersionKind::Release)
+                        .collect()
+                } else {
+                    m.versions
+                        .iter()
+                        .filter(|v| self.fabric_mc_versions.iter().any(|s| s == &v.id))
+                        .collect()
+                }
+            }
+        }
+    }
+
+    pub fn latest_stable_fabric_loader(&self) -> Option<&str> {
+        self.fabric_loaders.first().map(|s| s.as_str())
+    }
+
+    pub fn selected_modded_id(&self) -> Option<String> {
+        let mc = self.selected_version.as_ref()?;
+        let loader = self.latest_stable_fabric_loader()?;
+        Some(format!("fabric-loader-{loader}-{mc}"))
+    }
+
+    pub fn selected_modded_installed(&self) -> bool {
+        let Some(id) = self.selected_modded_id() else { return false };
+        self.paths.version_json(&id).exists() && self.paths.version_jar(&id).exists()
+    }
+
+    pub fn current_mods_dir(&self) -> Option<PathBuf> {
+        let id = self.selected_modded_id()?;
+        Some(self.paths.instances.join(&id).join("mods"))
+    }
+
+    pub fn refresh_installed_mods(&mut self) {
+        let Some(dir) = self.current_mods_dir() else {
+            self.installed_mods.clear();
+            return;
+        };
+        let mut out: Vec<String> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.ends_with(".jar") {
+                    Some(name)
+                } else {
+                    None
+                }
             })
-            .collect()
+            .collect();
+        out.sort();
+        self.installed_mods = out;
     }
 
     pub fn selected_manifest_entry(&self) -> Option<ManifestVersion> {
@@ -353,6 +488,98 @@ impl App {
                 self.skin_error = Some(e.clone());
                 self.status_message = format!("Skin change failed: {e}");
             }
+            WorkerMsg::UpdateCheckStarted => {
+                self.update_status = UpdateStatus::Checking;
+                self.status_message = "Checking for updates...".into();
+            }
+            WorkerMsg::UpdateCheckResult(info) => {
+                if info.up_to_date {
+                    self.status_message = format!("You're on the latest version ({}).", info.current);
+                    self.update_status = UpdateStatus::UpToDate(info.current);
+                } else {
+                    self.status_message =
+                        format!("Update available: {} → {}", info.current, info.latest);
+                    // Kick off the background download immediately.
+                    if let Some(asset) = info.asset.clone() {
+                        update::spawn_download(
+                            self.client.clone(),
+                            asset,
+                            self.paths.cache.clone(),
+                            self.worker_tx.clone(),
+                        );
+                        self.update_status = UpdateStatus::Downloading {
+                            info,
+                            done: 0,
+                            total: 0,
+                        };
+                    } else {
+                        self.update_status = UpdateStatus::Outdated(info);
+                    }
+                }
+            }
+            WorkerMsg::UpdateCheckFailed(e) => {
+                self.status_message = format!("Update check failed: {e}");
+                self.update_status = UpdateStatus::Failed(e);
+            }
+            WorkerMsg::UpdateDownloadStarted => {
+                // The status was already set above when we kicked off the download.
+            }
+            WorkerMsg::UpdateDownloadProgress { done, total } => {
+                if let UpdateStatus::Downloading { info, .. } = &self.update_status {
+                    let info = info.clone();
+                    self.update_status = UpdateStatus::Downloading { info, done, total };
+                }
+            }
+            WorkerMsg::UpdateDownloaded(path) => {
+                if let UpdateStatus::Downloading { info, .. } = &self.update_status {
+                    let info = info.clone();
+                    self.status_message =
+                        format!("Update downloaded — restart to apply ({}).", info.latest);
+                    self.update_status = UpdateStatus::Ready { info, new_exe: path };
+                }
+            }
+            WorkerMsg::UpdateDownloadFailed(e) => {
+                self.status_message = format!("Update download failed: {e}");
+                self.update_status = UpdateStatus::Failed(e);
+            }
+            WorkerMsg::FabricLoadersLoaded(v) => {
+                self.fabric_loaders = v;
+            }
+            WorkerMsg::FabricLoadersFailed(e) => {
+                tracing::warn!("fabric loader list failed: {e}");
+            }
+            WorkerMsg::FabricMcVersionsLoaded(v) => {
+                self.fabric_mc_versions = v;
+            }
+            WorkerMsg::FabricMcVersionsFailed(e) => {
+                tracing::warn!("fabric mc versions failed: {e}");
+            }
+            WorkerMsg::ModSearchStarted => {
+                self.mod_search_loading = true;
+                self.mod_search_error = None;
+            }
+            WorkerMsg::ModSearchDone(hits) => {
+                self.mod_search_loading = false;
+                self.mod_search_results = hits;
+                self.mod_search_offset = 0;
+            }
+            WorkerMsg::ModSearchFailed(e) => {
+                self.mod_search_loading = false;
+                self.mod_search_error = Some(e.clone());
+                self.status_message = format!("Mod search failed: {e}");
+            }
+            WorkerMsg::ModInstallStarted(p) => {
+                self.mod_installing = Some(p);
+            }
+            WorkerMsg::ModInstallDone { project: _, filename } => {
+                self.mod_installing = None;
+                self.status_message = format!("Installed mod: {filename}");
+                self.refresh_installed_mods();
+            }
+            WorkerMsg::ModInstallFailed { project: _, error } => {
+                self.mod_installing = None;
+                self.status_message = format!("Mod install failed: {error}");
+            }
         }
     }
 }
@@ -470,3 +697,34 @@ pub fn spawn_article_fetch(
         }
     });
 }
+
+pub fn spawn_fabric_meta_fetch(client: reqwest::Client, tx: UnboundedSender<WorkerMsg>) {
+    let c1 = client.clone();
+    let tx1 = tx.clone();
+    tokio::spawn(async move {
+        match crate::fabric::fetch_loaders(&c1).await {
+            Ok(entries) => {
+                let versions: Vec<String> = entries
+                    .into_iter()
+                    .filter(|e| e.stable)
+                    .map(|e| e.version)
+                    .collect();
+                let _ = tx1.send(WorkerMsg::FabricLoadersLoaded(versions));
+            }
+            Err(e) => {
+                let _ = tx1.send(WorkerMsg::FabricLoadersFailed(format!("{e:#}")));
+            }
+        }
+    });
+    tokio::spawn(async move {
+        match crate::fabric::fetch_supported_mc_versions(&client).await {
+            Ok(v) => {
+                let _ = tx.send(WorkerMsg::FabricMcVersionsLoaded(v));
+            }
+            Err(e) => {
+                let _ = tx.send(WorkerMsg::FabricMcVersionsFailed(format!("{e:#}")));
+            }
+        }
+    });
+}
+

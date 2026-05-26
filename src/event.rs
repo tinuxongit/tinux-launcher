@@ -1,7 +1,9 @@
 use crate::auth::Account;
 use crate::manifest::VersionManifest;
+use crate::modrinth::SearchHit;
 use crate::news::{Article, NewsEntry};
 use crate::skin::SkinPreview;
+use crate::update::UpdateInfo;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +23,13 @@ pub enum Hit {
     FilterReleases,
     FilterSnapshots,
     FilterOld,
+    FilterModded,
+    LoaderFabric,
+    BrowseModsButton,
+    ModResult(usize),
+    RemoveModButton(usize),
+    CloseModBrowser,
+    ModSearchField,
     OfflineNameField,
     LogRow(usize),
     CopyLineButton,
@@ -45,6 +54,10 @@ pub enum Hit {
     RotateSkinRight,
     VersionsScrollbar,
     LogsScrollbar,
+    CheckUpdatesButton,
+    OpenReleasesPage,
+    InstallUpdateNow,
+    DismissUpdate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -53,10 +66,17 @@ pub enum Tab {
     Versions,
     Profile,
     Logs,
+    Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Play, Tab::Versions, Tab::Profile, Tab::Logs];
+    pub const ALL: [Tab; 5] = [
+        Tab::Play,
+        Tab::Versions,
+        Tab::Profile,
+        Tab::Logs,
+        Tab::Settings,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -64,6 +84,7 @@ impl Tab {
             Tab::Versions => "Versions",
             Tab::Profile => "Profile",
             Tab::Logs => "Logs",
+            Tab::Settings => "Settings",
         }
     }
 }
@@ -96,4 +117,29 @@ pub enum WorkerMsg {
     SkinPendingFailed(String),
     SkinApplied,
     SkinFailed(String),
+    UpdateCheckStarted,
+    UpdateCheckResult(UpdateInfo),
+    UpdateCheckFailed(String),
+    UpdateDownloadStarted,
+    UpdateDownloadProgress { done: u64, total: u64 },
+    UpdateDownloaded(std::path::PathBuf),
+    UpdateDownloadFailed(String),
+    FabricLoadersLoaded(Vec<String>),
+    FabricLoadersFailed(String),
+    FabricMcVersionsLoaded(Vec<String>),
+    FabricMcVersionsFailed(String),
+    ModSearchStarted,
+    ModSearchDone(Vec<SearchHit>),
+    ModSearchFailed(String),
+    ModInstallStarted(String),
+    ModInstallDone {
+        #[allow(dead_code)]
+        project: String,
+        filename: String,
+    },
+    ModInstallFailed {
+        #[allow(dead_code)]
+        project: String,
+        error: String,
+    },
 }

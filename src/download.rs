@@ -217,7 +217,8 @@ fn job_for_artifact(a: &Artifact, dest: &Path) -> DownloadJob {
     DownloadJob {
         url: a.url.clone(),
         dest: dest.to_path_buf(),
-        sha1: Some(a.sha1.clone()),
+        // Fabric's library entries don't include sha1; treat empty as unverified.
+        sha1: if a.sha1.is_empty() { None } else { Some(a.sha1.clone()) },
         size: a.size,
     }
 }

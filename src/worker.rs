@@ -1,10 +1,12 @@
 use crate::download::{install_version, ProgressEvent};
 use crate::event::{InstallKind, WorkerMsg};
+use crate::fabric;
 use crate::java::{self, JavaInstall};
 use crate::launch::{self, LaunchOptions};
-use crate::manifest::ManifestVersion;
+use crate::manifest::{ManifestVersion, VersionKind, VersionManifest};
 use crate::paths::Paths;
 use crate::version::VersionDetails;
+use std::sync::Arc;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
 pub async fn do_install(
@@ -154,6 +156,97 @@ pub async fn do_install_and_launch(
         }
     }
 
+}
+
+pub async fn do_install_fabric(
+    client: reqwest::Client,
+    paths: Paths,
+    manifest: Arc<VersionManifest>,
+    mc_version: String,
+    loader_version: String,
+    tx: UnboundedSender<WorkerMsg>,
+) {
+    let fabric_id = match fabric::prepare_fabric_version(
+        &client,
+        &paths,
+        &manifest,
+        &mc_version,
+        &loader_version,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::InstallFailed {
+                version: format!("fabric/{mc_version}"),
+                error: format!("{e:#}"),
+            });
+            return;
+        }
+    };
+
+    let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
+    let app_tx = tx.clone();
+    let forwarder = tokio::spawn(async move {
+        while let Some(ev) = prog_rx.recv().await {
+            let _ = app_tx.send(WorkerMsg::InstallProgress {
+                kind: InstallKind::Install,
+                done: ev.done,
+                total: ev.total,
+                what: ev.what,
+            });
+        }
+    });
+
+    let result = install_version(&client, &paths, &fabric_id, "", &prog_tx).await;
+    drop(prog_tx);
+    let _ = forwarder.await;
+    match result {
+        Ok(_) => {
+            let _ = tx.send(WorkerMsg::InstallDone(fabric_id));
+        }
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::InstallFailed {
+                version: fabric_id,
+                error: format!("{e:#}"),
+            });
+        }
+    }
+}
+
+pub async fn do_install_and_launch_fabric(
+    client: reqwest::Client,
+    paths: Paths,
+    manifest: Arc<VersionManifest>,
+    mc_version: String,
+    loader_version: String,
+    java: JavaInstall,
+    opts: LaunchOptions,
+    tx: UnboundedSender<WorkerMsg>,
+) {
+    let fabric_id = match fabric::prepare_fabric_version(
+        &client,
+        &paths,
+        &manifest,
+        &mc_version,
+        &loader_version,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::LaunchFailed(format!("Fabric setup failed: {e:#}")));
+            return;
+        }
+    };
+    let entry = ManifestVersion {
+        id: fabric_id,
+        kind: VersionKind::Release,
+        url: String::new(),
+        sha1: String::new(),
+        release_time: String::new(),
+    };
+    do_install_and_launch(client, paths, entry, java, opts, tx).await;
 }
 
 fn required_java_major(details: &VersionDetails) -> u32 {

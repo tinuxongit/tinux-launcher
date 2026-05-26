@@ -1,4 +1,7 @@
-use crate::app::{AccountMode, App, Focus, InstallState, LaunchState, SkinModel, VersionFilter};
+use crate::app::{
+    AccountMode, App, Focus, InstallState, LaunchState, ModLoader, SkinModel, UpdateStatus,
+    VersionFilter,
+};
 use crate::event::{Hit, InstallKind, Tab};
 use crate::news::Block as ArticleBlock;
 use crate::skin::SkinPreviewWidget;
@@ -74,8 +77,25 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Tab::Versions => draw_versions(f, app, outer[2]),
         Tab::Profile => draw_accounts(f, app, outer[2]),
         Tab::Logs => draw_logs(f, app, outer[2]),
+        Tab::Settings => draw_settings(f, app, outer[2]),
+    }
+    if app.mod_browser_open {
+        draw_mod_browser(f, app, frame);
+    }
+    if update_modal_visible(app) {
+        draw_update_modal(f, app, frame);
     }
     draw_status(f, app, outer[4]);
+}
+
+fn update_modal_visible(app: &App) -> bool {
+    if app.update_modal_dismissed {
+        return false;
+    }
+    matches!(
+        app.update_status,
+        UpdateStatus::Downloading { .. } | UpdateStatus::Ready { .. }
+    )
 }
 
 fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
@@ -195,10 +215,12 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(outer_rows[0]);
 
-    let sel = app
-        .selected_manifest_entry()
-        .map(|v| format!("{} ({})", v.id, v.kind.label()))
-        .unwrap_or_else(|| "(no version selected)".to_string());
+    let modded = app.filter == VersionFilter::Modded;
+    let sel = match app.selected_manifest_entry() {
+        Some(v) if modded => format!("{}  ·  Fabric mod loader", v.id),
+        Some(v) => format!("{} ({})", v.id, v.kind.label()),
+        None => "(no version selected)".to_string(),
+    };
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("Selected: ", theme::dim()),
@@ -235,8 +257,18 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
 
     let btn_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(22), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(22),
+            Constraint::Length(2),
+            Constraint::Length(20),
+            Constraint::Min(0),
+        ])
         .split(rows[3]);
+    let installed = if modded {
+        app.selected_modded_installed()
+    } else {
+        app.selected_is_installed()
+    };
     if let Some(state) = &app.install {
         let label = match state.kind {
             InstallKind::Install => "Installing...",
@@ -245,10 +277,13 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         draw_disabled_button(f, btn_cols[0], label);
     } else if app.launch_state == LaunchState::Running {
         draw_disabled_button(f, btn_cols[0], "Running");
-    } else if app.selected_is_installed() {
+    } else if installed {
         draw_button(f, app, btn_cols[0], "▶  Launch", Hit::LaunchButton, true);
     } else {
         draw_button(f, app, btn_cols[0], "⬇  Install", Hit::InstallButton, true);
+    }
+    if modded && installed {
+        draw_button(f, app, btn_cols[2], "📦 Browse Mods", Hit::BrowseModsButton, false);
     }
 
     if installing {
@@ -492,7 +527,7 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
 
     let filter_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(48), Constraint::Min(0)])
+        .constraints([Constraint::Length(64), Constraint::Min(0)])
         .split(rows[0]);
     draw_segmented(
         f,
@@ -510,8 +545,32 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
                 app.filter == VersionFilter::Snapshots,
             ),
             ("Older", Hit::FilterOld, app.filter == VersionFilter::Old),
+            (
+                "Modded",
+                Hit::FilterModded,
+                app.filter == VersionFilter::Modded,
+            ),
         ],
     );
+
+    if app.filter == VersionFilter::Modded {
+        let hint = match app.latest_stable_fabric_loader() {
+            Some(v) => format!("  Loader: Fabric {v}  ·  install via Play tab"),
+            None => "  Loader: Fabric (loading...)".to_string(),
+        };
+        let hint_rect = filter_cols[1];
+        let mid = hint_rect.height / 2;
+        let lines: Vec<Line> = (0..hint_rect.height)
+            .map(|i| {
+                if i == mid {
+                    Line::from(Span::styled(hint.clone(), theme::dim()))
+                } else {
+                    Line::from("")
+                }
+            })
+            .collect();
+        f.render_widget(Paragraph::new(lines).style(theme::base()), hint_rect);
+    }
 
     let list_area = rows[2];
     let list_chunks = Layout::default()
@@ -1489,6 +1548,544 @@ fn article_to_lines(article: &crate::news::Article) -> Vec<Line<'static>> {
 
 pub fn article_line_count(article: &crate::news::Article) -> usize {
     article_to_lines(article).len()
+}
+
+fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
+    wipe(f, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::BORDER))
+        .style(theme::base())
+        .title(Span::styled(" Settings ", theme::accent_bold()));
+    let inner = block.inner(area).inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    f.render_widget(block, area);
+
+    let mut y = inner.y;
+    let row = |yy: u16, w: u16| Rect::new(inner.x, yy, w, 1);
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled("Updates", theme::accent_bold())))
+            .style(theme::base()),
+        row(y, inner.width),
+    );
+    y += 1;
+    f.render_widget(
+        Paragraph::new("─".repeat(inner.width as usize))
+            .style(Style::default().fg(theme::BORDER).bg(theme::BG)),
+        row(y, inner.width),
+    );
+    y += 2;
+
+    let current_line = format!("Current version: v{}", env!("CARGO_PKG_VERSION"));
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("● ", Style::default().fg(theme::ACCENT)),
+            Span::styled(current_line, theme::base()),
+        ]))
+        .style(theme::base()),
+        row(y, inner.width),
+    );
+    y += 2;
+
+    let btn_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(26),
+            Constraint::Length(2),
+            Constraint::Length(24),
+            Constraint::Min(0),
+        ])
+        .split(btn_row);
+    match app.update_status {
+        UpdateStatus::Checking => draw_disabled_button(f, cols[0], "Checking..."),
+        UpdateStatus::Downloading { .. } => draw_disabled_button(f, cols[0], "Downloading..."),
+        UpdateStatus::Ready { .. } => {
+            draw_button(f, app, cols[0], "Install & restart", Hit::InstallUpdateNow, true);
+        }
+        _ => {
+            draw_button(
+                f,
+                app,
+                cols[0],
+                "Check for updates",
+                Hit::CheckUpdatesButton,
+                true,
+            );
+        }
+    }
+    let show_releases_btn = matches!(
+        app.update_status,
+        UpdateStatus::Outdated(_) | UpdateStatus::UpToDate(_) | UpdateStatus::Failed(_)
+    );
+    if show_releases_btn {
+        draw_button(
+            f,
+            app,
+            cols[2],
+            "Open releases page",
+            Hit::OpenReleasesPage,
+            false,
+        );
+    }
+    y += BUTTON_H + 1;
+
+    let (status_line, status_style) = match &app.update_status {
+        UpdateStatus::Idle => (
+            "Click \"Check for updates\" to query GitHub for the latest release.".to_string(),
+            theme::dim(),
+        ),
+        UpdateStatus::Checking => (
+            "Contacting GitHub...".to_string(),
+            Style::default().fg(theme::GOLD).bg(theme::BG),
+        ),
+        UpdateStatus::UpToDate(v) => (
+            format!("✓ You're on the latest version (v{v})."),
+            Style::default().fg(theme::ACCENT_HI).bg(theme::BG),
+        ),
+        UpdateStatus::Outdated(info) => (
+            format!(
+                "⚠  Update available: v{} → v{}.  Open the releases page to download.",
+                info.current, info.latest
+            ),
+            Style::default().fg(theme::GOLD).bg(theme::BG),
+        ),
+        UpdateStatus::Downloading { info, done, total } => {
+            let pct = if *total == 0 {
+                0.0
+            } else {
+                (*done as f64 / *total as f64) * 100.0
+            };
+            (
+                format!(
+                    "⬇  Downloading v{}... {:.0}%",
+                    info.latest, pct
+                ),
+                Style::default().fg(theme::GOLD).bg(theme::BG),
+            )
+        }
+        UpdateStatus::Ready { info, .. } => (
+            format!(
+                "✓ v{} downloaded — click \"Install & restart\" in the popup, or hit it here.",
+                info.latest
+            ),
+            Style::default().fg(theme::ACCENT_HI).bg(theme::BG),
+        ),
+        UpdateStatus::Failed(e) => (
+            format!("✗ Update check failed: {e}"),
+            Style::default().fg(theme::RED).bg(theme::BG),
+        ),
+    };
+    let max_h = inner.height.saturating_sub(y - inner.y);
+    let status_rect = Rect::new(inner.x, y, inner.width, max_h.min(3));
+    f.render_widget(
+        Paragraph::new(Span::styled(status_line, status_style))
+            .style(theme::base())
+            .wrap(Wrap { trim: true }),
+        status_rect,
+    );
+}
+
+fn draw_mod_browser(f: &mut Frame, app: &mut App, area: Rect) {
+    wipe(f, area);
+    let title = format!(
+        " Mods · {} · {} ",
+        app.loader.label(),
+        app.selected_version.clone().unwrap_or_else(|| "?".into())
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::ACCENT))
+        .style(theme::base())
+        .title(Span::styled(title, theme::accent_bold()));
+    let inner = block.inner(area).inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    f.render_widget(block, area);
+
+    // Top row: close button on the right
+    let close_row = Rect::new(inner.x, inner.y, inner.width, 1);
+    let close_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(7),
+            Constraint::Min(0),
+            Constraint::Length(8),
+        ])
+        .split(close_row);
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            "Loader:",
+            theme::dim(),
+        ))
+        .style(theme::base()),
+        close_cols[0],
+    );
+    let loader_rect = close_cols[1];
+    let loader_label = format!(
+        " {} {}",
+        if app.loader == ModLoader::Fabric { "●" } else { "○" },
+        ModLoader::Fabric.label()
+    );
+    let hovered = app.hover == Some(Hit::LoaderFabric);
+    let style = if hovered {
+        Style::default().fg(theme::ACCENT_HI).bg(theme::BG).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::FG).bg(theme::BG)
+    };
+    f.render_widget(Paragraph::new(loader_label).style(style), loader_rect);
+    app.click_regions.push((loader_rect, Hit::LoaderFabric));
+    let close_rect = close_cols[2];
+    let hovered = app.hover == Some(Hit::CloseModBrowser);
+    let cs = if hovered {
+        Style::default().fg(theme::ACCENT_HI).bg(theme::BG).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::FG_DIM).bg(theme::BG)
+    };
+    f.render_widget(
+        Paragraph::new("× Close").style(cs).alignment(Alignment::Right),
+        close_rect,
+    );
+    app.click_regions.push((close_rect, Hit::CloseModBrowser));
+
+    // Body: search field, results, installed list
+    let body_y = inner.y + 2;
+    let body = Rect::new(
+        inner.x,
+        body_y,
+        inner.width,
+        inner.height.saturating_sub(body_y - inner.y),
+    );
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Length(2), Constraint::Min(0)])
+        .split(body);
+    let left = cols[0];
+    let right = cols[2];
+
+    draw_mod_search_pane(f, app, left);
+    draw_installed_mods_pane(f, app, right);
+}
+
+fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(BUTTON_H),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    draw_mod_search_field(f, app, rows[0]);
+
+    let list_area = rows[2];
+    wipe(f, list_area);
+    if app.mod_search_loading {
+        f.render_widget(
+            Paragraph::new("Searching Modrinth...").style(theme::dim()),
+            list_area,
+        );
+        return;
+    }
+    if let Some(e) = &app.mod_search_error {
+        f.render_widget(
+            Paragraph::new(format!("Error: {e}"))
+                .style(Style::default().fg(theme::RED).bg(theme::BG))
+                .wrap(Wrap { trim: true }),
+            list_area,
+        );
+        return;
+    }
+    if app.mod_search_results.is_empty() {
+        f.render_widget(
+            Paragraph::new(
+                "Type a mod name and press Enter to search Modrinth.\nClick a result to install.",
+            )
+            .style(theme::dim())
+            .wrap(Wrap { trim: true }),
+            list_area,
+        );
+        return;
+    }
+
+    let h = list_area.height as usize / 2; // each row is 2 lines tall
+    let total = app.mod_search_results.len();
+    let start = app.mod_search_offset.min(total);
+    let end = (start + h).min(total);
+    for (i, hit) in app.mod_search_results[start..end].iter().enumerate() {
+        let global = start + i;
+        let y = list_area.y + (i as u16) * 2;
+        if y + 1 >= list_area.y + list_area.height {
+            break;
+        }
+        let row_rect = Rect::new(list_area.x, y, list_area.width, 2);
+        let hovered = app.hover == Some(Hit::ModResult(global));
+        let bg = if hovered { theme::PANEL_HI } else { theme::BG };
+        let installing_this = app.mod_installing.as_deref() == Some(hit.project_id.as_str());
+        let title_style = Style::default()
+            .fg(theme::ACCENT_HI)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD);
+        let dim_style = Style::default().fg(theme::FG_DIM).bg(bg);
+        let l1 = Line::from(vec![
+            Span::styled(
+                if installing_this { "⏳ " } else { "▸ " },
+                Style::default().fg(theme::ACCENT).bg(bg),
+            ),
+            Span::styled(hit.title.clone(), title_style),
+            Span::styled(format!("  by {}", hit.author), dim_style),
+        ]);
+        let desc = if hit.description.len() > 100 {
+            format!("{}...", &hit.description[..97])
+        } else {
+            hit.description.clone()
+        };
+        let l2 = Line::from(vec![
+            Span::styled("    ", Style::default().bg(bg)),
+            Span::styled(desc, Style::default().fg(theme::FG).bg(bg)),
+        ]);
+        f.render_widget(
+            Paragraph::new(vec![l1, l2]).style(Style::default().bg(bg)),
+            row_rect,
+        );
+        app.click_regions.push((row_rect, Hit::ModResult(global)));
+    }
+}
+
+fn draw_mod_search_field(f: &mut Frame, app: &mut App, rect: Rect) {
+    let focused = app.focus == Focus::ModSearch;
+    let hovered = app.hover == Some(Hit::ModSearchField);
+    let border_fg = if focused {
+        theme::ACCENT
+    } else if hovered {
+        theme::FG_DIM
+    } else {
+        theme::BORDER
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_fg).bg(theme::BG))
+        .style(theme::base())
+        .title(Span::styled(" Search mods ", theme::dim()));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let content = if focused {
+        format!("{}▎", app.mod_search_query)
+    } else if app.mod_search_query.is_empty() {
+        "(click here and type, then Enter)".to_string()
+    } else {
+        app.mod_search_query.clone()
+    };
+    let style = if !focused && app.mod_search_query.is_empty() {
+        theme::dim()
+    } else {
+        theme::base()
+    };
+    draw_vcentered_label(f, &format!(" {content}"), inner, style);
+    app.click_regions.push((rect, Hit::ModSearchField));
+}
+
+fn draw_installed_mods_pane(f: &mut Frame, app: &mut App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::BORDER))
+        .style(theme::base())
+        .title(Span::styled(" Installed ", theme::accent_bold()));
+    let inner = block.inner(area).inner(Margin {
+        horizontal: 1,
+        vertical: 0,
+    });
+    f.render_widget(block, area);
+
+    if app.installed_mods.is_empty() {
+        f.render_widget(
+            Paragraph::new("No mods installed yet.\n\nSearch on the left and click a result.")
+                .style(theme::dim())
+                .wrap(Wrap { trim: true }),
+            inner,
+        );
+        return;
+    }
+    let h = inner.height as usize;
+    let total = app.installed_mods.len();
+    let visible = total.min(h);
+    for (i, name) in app.installed_mods.iter().take(visible).enumerate() {
+        let y = inner.y + i as u16;
+        let row_rect = Rect::new(inner.x, y, inner.width, 1);
+        let hovered = app.hover == Some(Hit::RemoveModButton(i));
+        let style = if hovered {
+            Style::default().fg(theme::RED).bg(theme::BG)
+        } else {
+            Style::default().fg(theme::FG).bg(theme::BG)
+        };
+        let label = if hovered {
+            format!("✗  {name}")
+        } else {
+            format!("•  {name}")
+        };
+        let truncated = if label.chars().count() > row_rect.width as usize {
+            label
+                .chars()
+                .take(row_rect.width as usize)
+                .collect::<String>()
+        } else {
+            label
+        };
+        f.render_widget(Paragraph::new(truncated).style(style), row_rect);
+        app.click_regions
+            .push((row_rect, Hit::RemoveModButton(i)));
+    }
+}
+
+fn draw_update_modal(f: &mut Frame, app: &mut App, area: Rect) {
+    let w = 60u16.min(area.width.saturating_sub(4));
+    let h = 11u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let rect = Rect::new(x, y, w, h);
+
+    // Dim the surrounding frame a touch so the modal pops.
+    f.render_widget(
+        Fill {
+            style: Style::default().fg(theme::FG_DIM).bg(theme::BG),
+        },
+        rect,
+    );
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::GOLD))
+        .style(theme::base())
+        .title(Span::styled(
+            " Update available ",
+            Style::default()
+                .fg(theme::GOLD)
+                .bg(theme::BG)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect).inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    f.render_widget(block, rect);
+
+    let (info, downloading, done, total, ready) = match &app.update_status {
+        UpdateStatus::Downloading { info, done, total } => {
+            (info.clone(), true, *done, *total, false)
+        }
+        UpdateStatus::Ready { info, .. } => (info.clone(), false, 0, 0, true),
+        _ => return,
+    };
+
+    let mut y = inner.y;
+    let row = |yy: u16| Rect::new(inner.x, yy, inner.width, 1);
+
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Current: ", theme::dim()),
+            Span::styled(format!("v{}", info.current), theme::base()),
+            Span::styled("    ", theme::base()),
+            Span::styled("Latest: ", theme::dim()),
+            Span::styled(
+                format!("v{}", info.latest),
+                Style::default()
+                    .fg(theme::ACCENT_HI)
+                    .bg(theme::BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]))
+        .style(theme::base()),
+        row(y),
+    );
+    y += 2;
+
+    if downloading {
+        let pct = if total == 0 {
+            0.0
+        } else {
+            (done as f64 / total as f64).clamp(0.0, 1.0)
+        };
+        let width = inner.width.saturating_sub(8) as usize;
+        let filled = (pct * width as f64).round() as usize;
+        let bar: String = std::iter::repeat('█')
+            .take(filled)
+            .chain(std::iter::repeat('░').take(width.saturating_sub(filled)))
+            .collect();
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(bar, Style::default().fg(theme::ACCENT)),
+                Span::raw(" "),
+                Span::styled(format!("{:.0}%", pct * 100.0), theme::accent_bold()),
+            ]))
+            .style(theme::base()),
+            row(y),
+        );
+        y += 1;
+        let pretty = format!(
+            "Downloading {} ({} / {})",
+            info.asset.as_ref().map(|a| a.name.clone()).unwrap_or_default(),
+            human_bytes(done),
+            human_bytes(total),
+        );
+        f.render_widget(Paragraph::new(pretty).style(theme::dim()), row(y));
+        y += 2;
+    } else if ready {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "The new version is downloaded and ready to install.",
+                Style::default().fg(theme::ACCENT_HI).bg(theme::BG),
+            )))
+            .style(theme::base())
+            .wrap(Wrap { trim: true }),
+            Rect::new(inner.x, y, inner.width, 2),
+        );
+        y += 3;
+    }
+
+    // Buttons row
+    let btn_y = inner.y + inner.height.saturating_sub(BUTTON_H);
+    let btn_row = Rect::new(inner.x, btn_y, inner.width, BUTTON_H);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(18),
+            Constraint::Length(2),
+            Constraint::Length(12),
+        ])
+        .split(btn_row);
+    let _ = y;
+    if ready {
+        draw_button(f, app, cols[1], "Install & restart", Hit::InstallUpdateNow, true);
+    } else {
+        draw_disabled_button(f, cols[1], "Downloading...");
+    }
+    draw_button(f, app, cols[3], "Later", Hit::DismissUpdate, false);
+}
+
+fn human_bytes(n: u64) -> String {
+    const KIB: u64 = 1024;
+    const MIB: u64 = 1024 * KIB;
+    const GIB: u64 = 1024 * MIB;
+    if n >= GIB {
+        format!("{:.2} GiB", n as f64 / GIB as f64)
+    } else if n >= MIB {
+        format!("{:.1} MiB", n as f64 / MIB as f64)
+    } else if n >= KIB {
+        format!("{:.0} KiB", n as f64 / KIB as f64)
+    } else {
+        format!("{n} B")
+    }
 }
 
 pub fn hit_test(app: &App, col: u16, row: u16) -> Option<Hit> {
