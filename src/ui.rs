@@ -18,6 +18,7 @@ use ratatui::{
 const HEADER_HEIGHT: u16 = 4;
 const STATUS_HEIGHT: u16 = 1;
 const BUTTON_H: u16 = 3;
+const SKIN_PREVIEW_BOX_H: u16 = 24;
 
 struct Fill {
     style: Style,
@@ -607,7 +608,16 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(0), Constraint::Length(2), Constraint::Length(20)])
             .split(full_inner);
-        (cols[0], Some(cols[2]))
+        let preview_height = cols[2].height.min(SKIN_PREVIEW_BOX_H);
+        (
+            cols[0],
+            Some(Rect::new(
+                cols[2].x,
+                cols[2].y,
+                cols[2].width,
+                preview_height,
+            )),
+        )
     } else {
         (full_inner, None)
     };
@@ -892,10 +902,10 @@ fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
                 preview_rect,
             );
 
-            // Rotation arrows + view label below.
+            // Rotation arrows sit on the preview box border.
             let mid_y = preview_rect.y + preview_rect.height / 2;
-            if preview_rect.x > inner.x {
-                let left_rect = Rect::new(inner.x, mid_y, 2, 1);
+            if area.width > 2 && area.height > 2 {
+                let left_rect = Rect::new(area.x, mid_y, 1, 1);
                 let hovered = app.hover == Some(Hit::RotateSkinLeft);
                 let style = if hovered {
                     Style::default()
@@ -907,10 +917,9 @@ fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
                 };
                 f.render_widget(Paragraph::new("◀").style(style), left_rect);
                 app.click_regions.push((left_rect, Hit::RotateSkinLeft));
-            }
-            let right_x = preview_rect.x + preview_rect.width;
-            if right_x < inner.x + inner.width {
-                let right_rect = Rect::new(right_x, mid_y, 2, 1);
+
+                let right_x = area.x + area.width - 1;
+                let right_rect = Rect::new(right_x, mid_y, 1, 1);
                 let hovered = app.hover == Some(Hit::RotateSkinRight);
                 let style = if hovered {
                     Style::default()
@@ -920,7 +929,7 @@ fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
                 } else {
                     Style::default().fg(theme::ACCENT).bg(theme::BG)
                 };
-                f.render_widget(Paragraph::new(" ▶").style(style), right_rect);
+                f.render_widget(Paragraph::new("▶").style(style), right_rect);
                 app.click_regions.push((right_rect, Hit::RotateSkinRight));
             }
 

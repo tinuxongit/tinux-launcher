@@ -1,6 +1,6 @@
 use crate::download::{install_version, ProgressEvent};
 use crate::event::{InstallKind, WorkerMsg};
-use crate::java::JavaInstall;
+use crate::java::{self, JavaInstall};
 use crate::launch::{self, LaunchOptions};
 use crate::manifest::ManifestVersion;
 use crate::paths::Paths;
@@ -107,15 +107,28 @@ pub async fn do_install_and_launch(
         }
     };
 
-    if let Some(req) = &details.java_version {
-        if java.major < req.major_version {
-            let _ = tx.send(WorkerMsg::LaunchFailed(format!(
-                "Minecraft {} needs Java {}, but only Java {} is on PATH",
-                version_id, req.major_version, java.major
-            )));
-            return;
-        }
-    }
+    let required_java = required_java_major(&details);
+    let launch_java = if java.major == required_java {
+        java
+    } else if let Some(found) = java::detect_for_major(required_java) {
+        found
+    } else {
+        let found = java::detect_all()
+            .into_iter()
+            .map(|j| format!("Java {} at {}", j.major, j.path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let found = if found.is_empty() {
+            "no Java installations detected".to_string()
+        } else {
+            found
+        };
+        let _ = tx.send(WorkerMsg::LaunchFailed(format!(
+            "Minecraft {} needs Java {}, but {found}. Install Java {} or put it on PATH.",
+            version_id, required_java, required_java
+        )));
+        return;
+    };
 
     let (log_tx, mut log_rx) = mpsc::unbounded_channel::<String>();
     let app_tx = tx.clone();
@@ -126,7 +139,12 @@ pub async fn do_install_and_launch(
     });
 
     let _ = tx.send(WorkerMsg::LaunchStarted(version_id.clone()));
-    let res = launch::launch(&java, &paths, &plan, &details, &opts, log_tx).await;
+    let _ = tx.send(WorkerMsg::LaunchLog(format!(
+        "Using Java {} at {}",
+        launch_java.major,
+        launch_java.path.display()
+    )));
+    let res = launch::launch(&launch_java, &paths, &plan, &details, &opts, log_tx).await;
     match res {
         Ok(code) => {
             let _ = tx.send(WorkerMsg::LaunchExited(code));
@@ -136,4 +154,12 @@ pub async fn do_install_and_launch(
         }
     }
 
+}
+
+fn required_java_major(details: &VersionDetails) -> u32 {
+    details
+        .java_version
+        .as_ref()
+        .map(|req| req.major_version)
+        .unwrap_or(8)
 }

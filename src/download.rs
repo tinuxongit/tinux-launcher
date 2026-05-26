@@ -31,12 +31,19 @@ pub struct DownloadJob {
 pub struct InstallPlan {
     pub version_id: String,
     pub jobs: Vec<DownloadJob>,
+    pub resource_assets: Vec<ResourceAsset>,
     pub natives_jars: Vec<PathBuf>,
     pub classpath: Vec<PathBuf>,
     pub asset_index_id: String,
     pub asset_legacy_or_resources: AssetLayout,
     pub main_class: String,
     pub client_jar: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResourceAsset {
+    pub name: String,
+    pub hash: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +55,8 @@ pub enum AssetLayout {
 
 #[derive(Debug, Deserialize)]
 struct AssetIndex {
+    #[serde(default)]
+    map_to_resources: bool,
     objects: std::collections::BTreeMap<String, AssetObject>,
 }
 
@@ -66,6 +75,7 @@ pub async fn install_version(
 ) -> Result<InstallPlan> {
     let plan = build_plan(client, paths, version_id, version_url).await?;
     run_jobs(client, &plan.jobs, progress).await?;
+    materialize_resource_assets(paths, &plan).await?;
     Ok(plan)
 }
 
@@ -149,6 +159,7 @@ async fn build_plan(
     }
 
     // assets
+    let mut resource_assets = Vec::new();
     for (_name, obj) in &asset_index.objects {
         let dest = paths.asset_object(&obj.hash);
         let url = format!(
@@ -163,10 +174,17 @@ async fn build_plan(
             size: obj.size,
         });
     }
+    if asset_index.map_to_resources {
+        resource_assets.extend(asset_index.objects.iter().map(|(name, obj)| ResourceAsset {
+            name: name.clone(),
+            hash: obj.hash.clone(),
+        }));
+    }
 
     Ok(InstallPlan {
         version_id: details.id.clone(),
         jobs,
+        resource_assets,
         natives_jars,
         classpath,
         asset_index_id: details.asset_index.id.clone(),
@@ -174,6 +192,25 @@ async fn build_plan(
         main_class: details.main_class.clone(),
         client_jar,
     })
+}
+
+async fn materialize_resource_assets(paths: &Paths, plan: &InstallPlan) -> Result<()> {
+    if plan.resource_assets.is_empty() {
+        return Ok(());
+    }
+    let resources = paths.instances.join(&plan.version_id).join("resources");
+    for asset in &plan.resource_assets {
+        let src = paths.asset_object(&asset.hash);
+        let dest = resources.join(&asset.name);
+        if file_ok(&dest, Some(&asset.hash)).await? {
+            continue;
+        }
+        ensure_parent(&dest)?;
+        fs::copy(&src, &dest)
+            .await
+            .with_context(|| format!("copying resource asset {}", asset.name))?;
+    }
+    Ok(())
 }
 
 fn job_for_artifact(a: &Artifact, dest: &Path) -> DownloadJob {

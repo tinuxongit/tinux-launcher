@@ -1,0 +1,31 @@
+{
+  "name": "tinuxlauncher",
+  "version": "0.1.0",
+  "description": "Terminal Minecraft Java launcher",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tinuxongit/tinux-launcher.git"
+  },
+  "bugs": {
+    "url": "https://github.com/tinuxongit/tinux-launcher/issues"
+  },
+  "homepage": "https://github.com/tinuxongit/tinux-launcher#readme",
+  "bin": {
+    "tinuxlauncher": "npm/bin/tinuxlauncher.js"
+  },
+  "scripts": {
+    "build": "cargo build --release",
+    "postinstall": "node npm/scripts/postinstall.js"
+  },
+  "files": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "src",
+    "npm",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}

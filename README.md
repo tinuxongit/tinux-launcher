@@ -4,6 +4,32 @@ Terminal Minecraft Java Edition launcher.
 
 ## Install & run
 
+### pnpm
+
+From GitHub:
+
+```bash
+pnpm add -g github:tinuxongit/tinux-launcher
+tinuxlauncher
+```
+
+From this repository:
+
+```bash
+pnpm add -g .
+tinuxlauncher
+```
+
+The pnpm installer builds the Rust release binary during install, so users need Rust/Cargo installed.
+
+To update to the latest GitHub version:
+
+```bash
+tinuxlauncher update
+```
+
+### Source
+
 ```bash
 git clone https://github.com/tinuxongit/tinux-launcher
 cd tinux-launcher
