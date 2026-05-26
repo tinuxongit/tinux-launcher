@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     #[serde(default)]
     pub ms_client_id: Option<String>,
+    #[serde(default)]
+    pub offline_name: Option<String>,
 }
 
 impl Config {
@@ -19,6 +21,18 @@ impl Config {
 pub fn path() -> Option<PathBuf> {
     directories::ProjectDirs::from("dev", "tinux", "TinuxLauncher")
         .map(|d| d.data_dir().join("config.json"))
+}
+
+pub fn save_offline_name(name: &str) {
+    let Some(p) = path() else { return };
+    let mut cfg = Config::load(&p);
+    cfg.offline_name = Some(name.to_string());
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_vec_pretty(&cfg) {
+        let _ = std::fs::write(&p, json);
+    }
 }
 
 pub fn ensure_stub() {

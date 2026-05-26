@@ -161,21 +161,37 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         vertical: 1,
     });
     f.render_widget(block, area);
+    app.play_inner = inner;
+
+    let installing = app.install.is_some();
+    let progress_h = if installing { 2 } else { 0 };
+    let progress_gap = if installing { 1 } else { 0 };
+    // Default top: selected(1) + playing(1) + gap(1) + button(3) + gap(1) + progress + progress_gap
+    let default_top = 7u16 + progress_h + progress_gap;
+    let max_top = inner.height.saturating_sub(4);
+    let top_h = app.news_split_top.unwrap_or(default_top).clamp(7, max_top.max(7));
+
+    let outer_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(top_h),
+            Constraint::Length(1), // news header (draggable)
+            Constraint::Min(0),    // news list
+        ])
+        .split(inner);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),        // 0 Selected: ...
-            Constraint::Length(1),        // 1 Playing as: ...
-            Constraint::Length(1),        // 2 gap
-            Constraint::Length(BUTTON_H), // 3 button
-            Constraint::Length(1),        // 4 gap
-            Constraint::Length(2),        // 5 progress
-            Constraint::Length(1),        // 6 gap
-            Constraint::Length(1),        // 7 news header
-            Constraint::Min(0),           // 8 news list
+            Constraint::Length(1),            // 0 Selected
+            Constraint::Length(1),            // 1 Playing as
+            Constraint::Length(1),            // 2 gap
+            Constraint::Length(BUTTON_H),     // 3 button
+            Constraint::Length(progress_gap), // 4 (gap only if installing)
+            Constraint::Length(progress_h),   // 5 progress (0 if not installing)
+            Constraint::Min(0),               // padding
         ])
-        .split(inner);
+        .split(outer_rows[0]);
 
     let sel = app
         .selected_manifest_entry()
@@ -233,21 +249,34 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         draw_button(f, app, btn_cols[0], "⬇  Install", Hit::InstallButton, true);
     }
 
-    draw_progress(f, app, rows[5]);
-    draw_news_header(f, app, rows[7]);
-    draw_news_list(f, app, rows[8]);
+    if installing {
+        draw_progress(f, app, rows[5]);
+    }
+    draw_news_header(f, app, outer_rows[1]);
+    draw_news_list(f, app, outer_rows[2]);
 }
 
 fn draw_news_header(f: &mut Frame, app: &mut App, area: Rect) {
-    let title = " Latest news ";
+    let grip_hovered = app.hover == Some(Hit::NewsSplitter) || app.dragging_split;
+    let grip_char = if grip_hovered { "⇕ " } else { "↕ " };
+    let title_text = format!("{grip_char}Latest news ");
     let link_text = "See all on minecraft.net ↗ ";
-    let title_w = title.chars().count();
+    let title_w = title_text.chars().count();
     let link_w = link_text.chars().count();
     let area_w = area.width as usize;
     let dash_w = area_w.saturating_sub(title_w + link_w);
 
-    let hovered = app.hover == Some(Hit::OpenAllArticles);
-    let link_style = if hovered {
+    let title_style = if grip_hovered {
+        Style::default()
+            .fg(theme::ACCENT_HI)
+            .bg(theme::BG)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        theme::accent_bold()
+    };
+
+    let link_hovered = app.hover == Some(Hit::OpenAllArticles);
+    let link_style = if link_hovered {
         Style::default()
             .fg(theme::ACCENT_HI)
             .bg(theme::BG)
@@ -259,15 +288,22 @@ fn draw_news_header(f: &mut Frame, app: &mut App, area: Rect) {
             .add_modifier(Modifier::UNDERLINED)
     };
 
+    let dash_style = if grip_hovered {
+        Style::default().fg(theme::ACCENT).bg(theme::BG)
+    } else {
+        Style::default().fg(theme::BORDER).bg(theme::BG)
+    };
+
     let line = Line::from(vec![
-        Span::styled(title, theme::accent_bold()),
-        Span::styled(
-            "─".repeat(dash_w),
-            Style::default().fg(theme::BORDER).bg(theme::BG),
-        ),
+        Span::styled(title_text, title_style),
+        Span::styled("─".repeat(dash_w), dash_style),
         Span::styled(link_text, link_style),
     ]);
     f.render_widget(Paragraph::new(line).style(theme::base()), area);
+
+    // Drag grip: the title + dashes (the whole row minus the link).
+    let grip_rect = Rect::new(area.x, area.y, (title_w + dash_w) as u16, 1);
+    app.click_regions.push((grip_rect, Hit::NewsSplitter));
 
     let link_rect = Rect::new(
         area.x + (title_w + dash_w) as u16,

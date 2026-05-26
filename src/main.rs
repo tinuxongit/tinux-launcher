@@ -145,19 +145,26 @@ fn handle_key(app: &mut App, k: KeyEvent) {
     }
 
     if app.focus == Focus::OfflineName {
+        let mut changed = false;
         match k.code {
             KeyCode::Esc | KeyCode::Enter => {
                 app.focus = Focus::None;
             }
             KeyCode::Backspace => {
-                app.offline_name.pop();
+                if app.offline_name.pop().is_some() {
+                    changed = true;
+                }
             }
             KeyCode::Char(c) if !c.is_control() => {
                 if app.offline_name.chars().count() < 16 {
                     app.offline_name.push(c);
+                    changed = true;
                 }
             }
             _ => {}
+        }
+        if changed {
+            config::save_offline_name(&app.offline_name);
         }
         return;
     }
@@ -213,8 +220,24 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         }
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(hit) = ui::hit_test(app, m.column, m.row) {
+                if hit == Hit::NewsSplitter {
+                    app.dragging_split = true;
+                    return;
+                }
                 let extend = m.modifiers.contains(KeyModifiers::CONTROL);
                 dispatch(app, hit, extend);
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            app.dragging_split = false;
+        }
+        MouseEventKind::Drag(MouseButton::Left) if app.dragging_split => {
+            let inner = app.play_inner;
+            if inner.height > 8 && m.row > inner.y {
+                let rel = m.row - inner.y;
+                let min = 7u16;
+                let max = inner.height.saturating_sub(4);
+                app.news_split_top = Some(rel.clamp(min, max));
             }
         }
         MouseEventKind::ScrollUp => {
@@ -246,8 +269,12 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
 }
 
 fn dispatch(app: &mut App, hit: Hit, extend: bool) {
+    let prev_focus = app.focus;
     if hit != Hit::OfflineNameField {
         app.focus = Focus::None;
+    }
+    if prev_focus == Focus::OfflineName && app.focus != Focus::OfflineName {
+        config::save_offline_name(&app.offline_name);
     }
     match hit {
         Hit::Tab(t) => app.tab = t,
@@ -326,6 +353,7 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             let _ = webbrowser::open("https://www.minecraft.net/en-us/articles");
             app.status_message = "Opened minecraft.net/articles".into();
         }
+        Hit::NewsSplitter => {} // drag handled in handle_mouse
     }
 }
 

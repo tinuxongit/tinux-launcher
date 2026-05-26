@@ -78,6 +78,9 @@ pub struct App {
     pub article: Option<Article>,
     pub article_loading: bool,
     pub article_offset: u16,
+    pub news_split_top: Option<u16>,
+    pub dragging_split: bool,
+    pub play_inner: Rect,
 
     pub logs: VecDeque<String>,
     pub log_offset: usize,
@@ -106,6 +109,10 @@ impl App {
             Some(j) => format!("Java {} detected at {}", j.major, j.path.display()),
             None => "Java not found on PATH".into(),
         };
+        let saved_offline = crate::config::path()
+            .and_then(|p| crate::config::Config::load(&p).offline_name)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "Steve".to_string());
         Self {
             running: true,
             tab: Tab::Play,
@@ -120,7 +127,7 @@ impl App {
             click_regions: Vec::with_capacity(64),
             account: None,
             account_mode: AccountMode::Offline,
-            offline_name: "Steve".into(),
+            offline_name: saved_offline,
             focus: Focus::None,
             auth_in_progress: false,
             auth_error: None,
@@ -133,6 +140,9 @@ impl App {
             article: None,
             article_loading: false,
             article_offset: 0,
+            news_split_top: None,
+            dragging_split: false,
+            play_inner: Rect::default(),
             logs: VecDeque::with_capacity(LOG_CAPACITY),
             log_offset: 0,
             java,
