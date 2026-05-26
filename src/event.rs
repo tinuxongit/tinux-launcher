@@ -18,6 +18,8 @@ pub enum Hit {
     CopyLineButton,
     CopyAllButton,
     OpenConfigButton,
+    ModeOffline,
+    ModeOnline,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

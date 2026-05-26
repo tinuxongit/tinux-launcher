@@ -37,6 +37,12 @@ pub enum Focus {
     OfflineName,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountMode {
+    Offline,
+    Online,
+}
+
 pub struct App {
     pub running: bool,
     pub tab: Tab,
@@ -54,6 +60,7 @@ pub struct App {
     pub click_regions: Vec<(Rect, Hit)>,
 
     pub account: Option<Account>,
+    pub account_mode: AccountMode,
     pub offline_name: String,
     pub focus: Focus,
     pub auth_in_progress: bool,
@@ -103,6 +110,7 @@ impl App {
             hover: None,
             click_regions: Vec::with_capacity(64),
             account: None,
+            account_mode: AccountMode::Offline,
             offline_name: "Steve".into(),
             focus: Focus::None,
             auth_in_progress: false,
@@ -183,6 +191,7 @@ impl App {
                 self.auth_in_progress = false;
                 self.status_message = format!("Signed in as {}", a.username);
                 self.account = Some(a);
+                self.account_mode = AccountMode::Online;
             }
             WorkerMsg::AuthFailed(e) => {
                 self.auth_in_progress = false;

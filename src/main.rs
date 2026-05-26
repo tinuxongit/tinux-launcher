@@ -14,7 +14,7 @@ mod version;
 mod worker;
 
 use anyhow::Result;
-use app::{App, Focus, LaunchState};
+use app::{AccountMode, App, Focus, LaunchState};
 use crossterm::{
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
@@ -275,6 +275,8 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         Hit::CopyLineButton => copy_selected_log(app),
         Hit::CopyAllButton => copy_all_logs(app),
         Hit::OpenConfigButton => open_config(app),
+        Hit::ModeOffline => app.account_mode = AccountMode::Offline,
+        Hit::ModeOnline => app.account_mode = AccountMode::Online,
     }
 }
 
@@ -324,9 +326,15 @@ fn trigger_launch(app: &mut App) {
         app.status_message = "Java not detected — install Java 17+ and restart".into();
         return;
     };
-    let opts = match &app.account {
-        Some(a) => launch::LaunchOptions::from_account(a),
-        None => launch::LaunchOptions::offline(app.offline_name.clone()),
+    let opts = match app.account_mode {
+        AccountMode::Online => match &app.account {
+            Some(a) => launch::LaunchOptions::from_account(a),
+            None => {
+                app.status_message = "Sign in first, or switch to Offline mode".into();
+                return;
+            }
+        },
+        AccountMode::Offline => launch::LaunchOptions::offline(app.offline_name.clone()),
     };
 
     let client = app.client.clone();

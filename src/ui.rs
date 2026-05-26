@@ -1,4 +1,4 @@
-use crate::app::{App, Focus, InstallState, LaunchState, VersionFilter};
+use crate::app::{AccountMode, App, Focus, InstallState, LaunchState, VersionFilter};
 use crate::event::{Hit, Tab};
 use crate::theme;
 use ratatui::{
@@ -13,7 +13,7 @@ use ratatui::{
     Frame,
 };
 
-const HEADER_HEIGHT: u16 = 3;
+const HEADER_HEIGHT: u16 = 4;
 const STATUS_HEIGHT: u16 = 1;
 const BUTTON_H: u16 = 3;
 
@@ -80,6 +80,7 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // title + version
+            Constraint::Length(1), // gap
             Constraint::Length(1), // tabs
             Constraint::Length(1), // separator + active-tab underline
         ])
@@ -99,15 +100,15 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
     ]);
     f.render_widget(Paragraph::new(title).style(theme::base()), rows[0]);
 
-    let mut x = rows[1].x + 1;
+    let mut x = rows[2].x + 1;
     let mut active_seg: Option<(u16, u16)> = None;
     for tab in Tab::ALL {
         let label = format!(" {} ", tab.label());
         let w = label.chars().count() as u16;
-        if x + w > rows[1].x + rows[1].width {
+        if x + w > rows[2].x + rows[2].width {
             break;
         }
-        let rect = Rect::new(x, rows[1].y, w, 1);
+        let rect = Rect::new(x, rows[2].y, w, 1);
         let active = app.tab == tab;
         let hovered = app.hover == Some(Hit::Tab(tab));
         let style = if active {
@@ -128,16 +129,16 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
         x += w + 2;
     }
 
-    let sep: String = "─".repeat(rows[2].width as usize);
+    let sep: String = "─".repeat(rows[3].width as usize);
     f.render_widget(
         Paragraph::new(sep).style(Style::default().fg(theme::BORDER).bg(theme::BG)),
-        rows[2],
+        rows[3],
     );
     if let Some((ax, aw)) = active_seg {
         let overlay = "━".repeat(aw as usize);
         f.render_widget(
             Paragraph::new(overlay).style(Style::default().fg(theme::ACCENT).bg(theme::BG)),
-            Rect::new(ax, rows[2].y, aw, 1),
+            Rect::new(ax, rows[3].y, aw, 1),
         );
     }
 }
@@ -160,14 +161,11 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),        // 0 Selected: ...
-            Constraint::Length(1),        // 1 gap
-            Constraint::Length(BUTTON_H), // 2 buttons (tall)
-            Constraint::Length(1),        // 3 gap
-            Constraint::Length(1),        // 4 Account: ...
-            Constraint::Length(1),        // 5 gap
-            Constraint::Length(BUTTON_H), // 6 offline row (tall)
-            Constraint::Length(1),        // 7 gap
-            Constraint::Length(2),        // 8 progress
+            Constraint::Length(1),        // 1 Playing as: ...
+            Constraint::Length(1),        // 2 gap
+            Constraint::Length(BUTTON_H), // 3 buttons
+            Constraint::Length(1),        // 4 gap
+            Constraint::Length(2),        // 5 progress
             Constraint::Min(0),
         ])
         .split(inner);
@@ -185,6 +183,31 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         rows[0],
     );
 
+    let as_line = match (app.account_mode, &app.account) {
+        (AccountMode::Online, Some(a)) => Line::from(vec![
+            Span::styled("Playing as: ", theme::dim()),
+            Span::styled(
+                format!("● {} (Microsoft)", a.username),
+                Style::default().fg(theme::ACCENT_HI),
+            ),
+        ]),
+        (AccountMode::Online, None) => Line::from(vec![
+            Span::styled("Playing as: ", theme::dim()),
+            Span::styled(
+                "(online mode — not signed in)",
+                Style::default().fg(theme::GOLD),
+            ),
+        ]),
+        (AccountMode::Offline, _) => Line::from(vec![
+            Span::styled("Playing as: ", theme::dim()),
+            Span::styled(
+                format!("{} (offline)", app.offline_name),
+                Style::default().fg(theme::FG),
+            ),
+        ]),
+    };
+    f.render_widget(Paragraph::new(as_line).style(theme::base()), rows[1]);
+
     let buttons = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -193,50 +216,11 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(18),
             Constraint::Min(0),
         ])
-        .split(rows[2]);
+        .split(rows[3]);
     draw_button(f, app, buttons[0], "▶  Launch", Hit::LaunchButton, true);
     draw_button(f, app, buttons[2], "⬇  Install", Hit::InstallButton, false);
 
-    let acct_line = if let Some(a) = &app.account {
-        Line::from(vec![
-            Span::styled("Account: ", theme::dim()),
-            Span::styled(
-                format!("● {} (Microsoft)", a.username),
-                Style::default().fg(theme::ACCENT_HI),
-            ),
-        ])
-    } else if app.auth_in_progress {
-        Line::from(Span::styled(
-            "Account: signing in...",
-            Style::default().fg(theme::GOLD),
-        ))
-    } else {
-        Line::from(vec![
-            Span::styled("Account: ", theme::dim()),
-            Span::styled("not signed in", Style::default().fg(theme::FG_DIM)),
-        ])
-    };
-    f.render_widget(Paragraph::new(acct_line).style(theme::base()), rows[4]);
-
-    let offline_row = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(15),
-            Constraint::Length(22),
-            Constraint::Length(2),
-            Constraint::Length(18),
-            Constraint::Min(0),
-        ])
-        .split(rows[6]);
-    draw_vcentered_label(f, "Offline name:", offline_row[0], theme::dim());
-    draw_offline_name(f, app, offline_row[1]);
-    if app.account.is_some() {
-        draw_button(f, app, offline_row[3], "Sign out", Hit::LogoutButton, false);
-    } else {
-        draw_button(f, app, offline_row[3], "Sign in (MS)", Hit::LoginButton, false);
-    }
-
-    draw_progress(f, app, rows[8]);
+    draw_progress(f, app, rows[5]);
 }
 
 fn draw_vcentered_label(f: &mut Frame, label: &str, rect: Rect, style: Style) {
@@ -314,6 +298,7 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
     wipe(f, area);
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::BORDER))
         .style(theme::base())
         .title(Span::styled(" Versions ", theme::accent_bold()));
@@ -461,121 +446,160 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
     wipe(f, area);
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::BORDER))
         .style(theme::base())
         .title(Span::styled(" Accounts ", theme::accent_bold()));
     let inner = block.inner(area).inner(Margin {
-        horizontal: 1,
+        horizontal: 2,
         vertical: 1,
     });
     f.render_widget(block, area);
 
-    let signed_in = app.account.is_some();
-    let has_client = crate::auth::client_id().is_some();
+    let online = app.account_mode == AccountMode::Online;
 
-    let mut y = inner.y;
-    let row = |yy: u16| Rect::new(inner.x, yy, inner.width, 1);
-
-    let ms_line = match &app.account {
-        Some(a) => Line::from(vec![
-            Span::styled("Microsoft: ", theme::dim()),
-            Span::styled(
-                format!("● {} ({})", a.username, a.uuid),
-                Style::default().fg(theme::ACCENT_HI),
-            ),
-        ]),
-        None => Line::from(vec![
-            Span::styled("Microsoft: ", theme::dim()),
-            Span::styled("not signed in", Style::default().fg(theme::FG_DIM)),
-        ]),
-    };
-    f.render_widget(Paragraph::new(ms_line).style(theme::base()), row(y));
-    y += 2;
-
-    if !signed_in && !has_client {
-        let header = Span::styled(
-            "Sign-in needs your own Azure app (free, ~5 min):",
-            Style::default()
-                .fg(theme::GOLD)
-                .add_modifier(Modifier::BOLD),
-        );
-        f.render_widget(Paragraph::new(Line::from(header)).style(theme::base()), row(y));
-        y += 1;
-        let steps = [
-            "  1. portal.azure.com  →  App registrations  →  New registration",
-            "  2. Supported accounts: Personal Microsoft accounts only",
-            "  3. Add platform → Mobile/desktop → http://localhost/callback",
-            "  4. Copy the Application (client) ID from the overview page",
-            "  5. Paste it as \"ms_client_id\" in the config file below",
-        ];
-        for s in steps {
-            f.render_widget(
-                Paragraph::new(s).style(theme::dim()),
-                row(y),
-            );
-            y += 1;
-        }
-        y += 1;
-
-        let cfg_label = match crate::config::path() {
-            Some(p) => p.display().to_string(),
-            None => "(could not resolve config path)".into(),
-        };
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("Config: ", theme::dim()),
-                Span::styled(cfg_label, Style::default().fg(theme::ACCENT)),
-            ]))
-            .style(theme::base()),
-            row(y),
-        );
-        y += 2;
-    } else if has_client && !signed_in {
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "Client ID configured. Ready to sign in.",
-                Style::default().fg(theme::ACCENT),
-            )))
-            .style(theme::base()),
-            row(y),
-        );
-        y += 2;
-    }
-
-    if let Some(e) = &app.auth_error {
-        let err_height = inner.y + inner.height - y;
-        let err_rect = Rect::new(inner.x, y, inner.width, err_height.min(3));
-        f.render_widget(
-            Paragraph::new(format!("Last error: {e}"))
-                .style(Style::default().fg(theme::RED).bg(theme::BG))
-                .wrap(Wrap { trim: true }),
-            err_rect,
-        );
-        y += err_rect.height + 1;
-    }
-
-    let btn_row_rect = row(y);
-    let cols = Layout::default()
+    // Mode toggle row
+    f.render_widget(
+        Paragraph::new(Span::styled("Mode:", theme::dim())).style(theme::base()),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+    let toggle_row = Rect::new(inner.x, inner.y + 1, inner.width, BUTTON_H);
+    let toggle_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(16),
             Constraint::Length(2),
-            Constraint::Length(15),
+            Constraint::Length(16),
             Constraint::Min(0),
         ])
-        .split(btn_row_rect);
-    if signed_in {
-        draw_button(f, app, cols[0], "Sign out", Hit::LogoutButton, false);
+        .split(toggle_row);
+    draw_toggle(f, app, toggle_cols[0], "Offline", Hit::ModeOffline, !online);
+    draw_toggle(f, app, toggle_cols[2], "Online", Hit::ModeOnline, online);
+
+    let mut y = inner.y + 1 + BUTTON_H + 1;
+    let row = |yy: u16| Rect::new(inner.x, yy, inner.width, 1);
+
+    if online {
+        let ms_line = match &app.account {
+            Some(a) => Line::from(vec![
+                Span::styled("Microsoft: ", theme::dim()),
+                Span::styled(
+                    format!("● {} ({})", a.username, a.uuid),
+                    Style::default().fg(theme::ACCENT_HI),
+                ),
+            ]),
+            None if app.auth_in_progress => Line::from(Span::styled(
+                "Microsoft: signing in...",
+                Style::default().fg(theme::GOLD),
+            )),
+            None => Line::from(vec![
+                Span::styled("Microsoft: ", theme::dim()),
+                Span::styled("not signed in", Style::default().fg(theme::FG_DIM)),
+            ]),
+        };
+        f.render_widget(Paragraph::new(ms_line).style(theme::base()), row(y));
+        y += 2;
+
+        if let Some(e) = &app.auth_error {
+            let err_rect = Rect::new(inner.x, y, inner.width, 3);
+            f.render_widget(
+                Paragraph::new(format!("Last error: {e}"))
+                    .style(Style::default().fg(theme::RED).bg(theme::BG))
+                    .wrap(Wrap { trim: true }),
+                err_rect,
+            );
+            y += 4;
+        }
+
+        let btn_row_rect = Rect::new(inner.x, y, inner.width, BUTTON_H);
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(18),
+                Constraint::Length(2),
+                Constraint::Length(18),
+                Constraint::Min(0),
+            ])
+            .split(btn_row_rect);
+        if app.account.is_some() {
+            draw_button(f, app, cols[0], "Sign out", Hit::LogoutButton, false);
+        } else {
+            draw_button(f, app, cols[0], "Sign in (MS)", Hit::LoginButton, true);
+        }
+        draw_button(f, app, cols[2], "Open config", Hit::OpenConfigButton, false);
     } else {
-        draw_button(f, app, cols[0], "Sign in (MS)", Hit::LoginButton, has_client);
+        let label_row = row(y);
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(15), Constraint::Min(0)])
+            .split(label_row);
+        f.render_widget(
+            Paragraph::new("Offline name:").style(theme::dim()),
+            cols[0],
+        );
+        y += 1;
+
+        let field_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(28), Constraint::Min(0)])
+            .split(field_row);
+        draw_offline_name(f, app, cols[0]);
     }
-    draw_button(f, app, cols[2], "Open config", Hit::OpenConfigButton, false);
+}
+
+fn draw_toggle(
+    f: &mut Frame,
+    app: &mut App,
+    rect: Rect,
+    label: &str,
+    hit: Hit,
+    active: bool,
+) {
+    let hovered = app.hover == Some(hit);
+    let (fg, border_fg) = if active {
+        (theme::ACCENT_HI, theme::ACCENT)
+    } else if hovered {
+        (theme::FG, theme::FG_DIM)
+    } else {
+        (theme::FG_DIM, theme::BORDER)
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_fg).bg(theme::BG));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mid = inner.height / 2;
+    let modifier = if active {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
+    let styled = Span::styled(
+        label,
+        Style::default().fg(fg).bg(theme::BG).add_modifier(modifier),
+    );
+    let lines: Vec<Line> = (0..inner.height)
+        .map(|i| if i == mid { Line::from(vec![styled.clone()]) } else { Line::from("") })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(theme::base())
+            .alignment(Alignment::Center),
+        inner,
+    );
+
+    app.click_regions.push((rect, hit));
 }
 
 fn draw_logs(f: &mut Frame, app: &mut App, area: Rect) {
     wipe(f, area);
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::BORDER))
         .style(theme::base())
         .title(Span::styled(" Logs ", theme::accent_bold()));
@@ -585,9 +609,9 @@ fn draw_logs(f: &mut Frame, app: &mut App, area: Rect) {
     let body = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // toolbar
-            Constraint::Length(1), // gap
-            Constraint::Min(0),    // log content
+            Constraint::Length(BUTTON_H), // toolbar
+            Constraint::Length(1),        // gap
+            Constraint::Min(0),           // log content
         ])
         .split(inner.inner(Margin {
             horizontal: 1,
@@ -597,9 +621,9 @@ fn draw_logs(f: &mut Frame, app: &mut App, area: Rect) {
     let toolbar = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(16),
+            Constraint::Length(20),
             Constraint::Length(2),
-            Constraint::Length(11),
+            Constraint::Length(14),
             Constraint::Length(2),
             Constraint::Min(0),
         ])
@@ -610,11 +634,11 @@ fn draw_logs(f: &mut Frame, app: &mut App, area: Rect) {
         Some((a, b)) => {
             let n = (a.max(b) - a.min(b)) + 1;
             let s = if n == 1 { "" } else { "s" };
-            format!("{n} line{s} selected — Ctrl+click to extend, Ctrl+C to copy")
+            format!("{n} line{s} selected — Ctrl+click extends, Ctrl+C copies")
         }
-        None => "Click a line to select  •  Ctrl+click extends  •  Ctrl+A all  •  Ctrl+C copies".into(),
+        None => "Click a line  •  Ctrl+click extends  •  Ctrl+A all  •  Ctrl+C copies".into(),
     };
-    f.render_widget(Paragraph::new(hint).style(theme::dim()), toolbar[4]);
+    draw_vcentered_label(f, &hint, toolbar[4], theme::dim());
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -703,44 +727,37 @@ fn draw_button(
         return;
     }
 
-    let (bg, fg, border_fg) = if primary && hovered {
-        (theme::ACCENT_HI, theme::BG, theme::ACCENT_HI)
+    let (fg, border_fg) = if primary && hovered {
+        (theme::ACCENT_HI, theme::ACCENT_HI)
     } else if primary {
-        (theme::GOLD, theme::BG, theme::GOLD)
+        (theme::GOLD, theme::GOLD)
     } else if hovered {
-        (theme::PANEL_HI, theme::FG, theme::FG_DIM)
+        (theme::ACCENT, theme::ACCENT)
     } else {
-        (theme::PANEL_HI, theme::FG, theme::BORDER)
+        (theme::FG, theme::BORDER)
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_fg).bg(theme::BG))
-        .style(Style::default().bg(bg));
+        .border_style(Style::default().fg(border_fg).bg(theme::BG));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
     let mid = inner.height / 2;
-    let bold_label = Span::styled(
+    let styled = Span::styled(
         label,
         Style::default()
             .fg(fg)
-            .bg(bg)
+            .bg(theme::BG)
             .add_modifier(Modifier::BOLD),
     );
     let lines: Vec<Line> = (0..inner.height)
-        .map(|i| {
-            if i == mid {
-                Line::from(vec![bold_label.clone()])
-            } else {
-                Line::from(Span::styled(" ", Style::default().bg(bg)))
-            }
-        })
+        .map(|i| if i == mid { Line::from(vec![styled.clone()]) } else { Line::from("") })
         .collect();
     f.render_widget(
         Paragraph::new(lines)
-            .style(Style::default().bg(bg))
+            .style(theme::base())
             .alignment(Alignment::Center),
         inner,
     );
