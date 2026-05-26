@@ -38,6 +38,8 @@ pub enum Hit {
     SkinModelSlim,
     ApplySkinButton,
     ResetSkinButton,
+    PreviewSkinButton,
+    ClearPreviewButton,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -85,6 +87,8 @@ pub enum WorkerMsg {
     ArticleLoaded { index: usize, article: Article },
     ArticleFailed { index: usize, error: String },
     SkinPreviewLoaded(SkinPreview),
+    SkinPendingLoaded(SkinPreview),
+    SkinPendingFailed(String),
     SkinApplied,
     SkinFailed(String),
 }

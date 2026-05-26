@@ -780,18 +780,25 @@ fn draw_skin_section(f: &mut Frame, app: &mut App, inner: Rect, mut y: u16) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(15),
+            Constraint::Length(13),
+            Constraint::Length(2),
+            Constraint::Length(13),
             Constraint::Length(2),
             Constraint::Length(20),
             Constraint::Min(0),
         ])
         .split(btn_row);
-    if app.skin_busy {
-        draw_disabled_button(f, cols[0], "Working...");
+    if app.skin_pending_loading {
+        draw_disabled_button(f, cols[0], "Loading...");
     } else {
-        draw_button(f, app, cols[0], "Apply skin", Hit::ApplySkinButton, true);
+        draw_button(f, app, cols[0], "Preview", Hit::PreviewSkinButton, false);
     }
-    draw_button(f, app, cols[2], "Reset to default", Hit::ResetSkinButton, false);
+    if app.skin_busy {
+        draw_disabled_button(f, cols[2], "Working...");
+    } else {
+        draw_button(f, app, cols[2], "Apply skin", Hit::ApplySkinButton, true);
+    }
+    draw_button(f, app, cols[4], "Reset to default", Hit::ResetSkinButton, false);
 }
 
 fn draw_skin_url(f: &mut Frame, app: &mut App, rect: Rect) {
@@ -830,24 +837,60 @@ fn draw_skin_url(f: &mut Frame, app: &mut App, rect: Rect) {
 }
 
 fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
+    let pending = app.skin_pending_preview.is_some();
+    let (title, border_fg) = if pending {
+        (" Pending preview ", theme::GOLD)
+    } else {
+        (" Skin preview ", theme::BORDER)
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::BORDER))
+        .border_style(Style::default().fg(border_fg))
         .style(theme::base())
-        .title(Span::styled(" Skin preview ", theme::accent_bold()));
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(if pending { theme::GOLD } else { theme::ACCENT })
+                .add_modifier(Modifier::BOLD),
+        ));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    match &app.skin_preview {
+    let preview_to_show = app
+        .skin_pending_preview
+        .as_ref()
+        .or(app.skin_preview.as_ref());
+
+    match preview_to_show {
         Some(preview) => {
             let cols = preview.cols();
             let rows = preview.rows();
-            // Center inside inner.
             let x = inner.x + inner.width.saturating_sub(cols) / 2;
-            let y = inner.y + inner.height.saturating_sub(rows) / 2;
+            let y = inner.y + inner.height.saturating_sub(rows + 1) / 2;
             let preview_rect = Rect::new(x, y, cols.min(inner.width), rows.min(inner.height));
             f.render_widget(SkinPreviewWidget { preview }, preview_rect);
+
+            if pending && inner.height > rows + 1 {
+                let hint_y = preview_rect.y + rows + 1;
+                let hint_rect = Rect::new(inner.x, hint_y, inner.width, 1);
+                let hovered = app.hover == Some(Hit::ClearPreviewButton);
+                let style = if hovered {
+                    Style::default()
+                        .fg(theme::ACCENT_HI)
+                        .bg(theme::BG)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                } else {
+                    Style::default().fg(theme::FG_DIM).bg(theme::BG)
+                };
+                f.render_widget(
+                    Paragraph::new("× clear preview")
+                        .style(style)
+                        .alignment(Alignment::Center),
+                    hint_rect,
+                );
+                app.click_regions.push((hint_rect, Hit::ClearPreviewButton));
+            }
         }
         None => {
             let msg = if app.account.is_some() {

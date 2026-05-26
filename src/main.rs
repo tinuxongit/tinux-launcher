@@ -376,6 +376,11 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         Hit::SkinModelSlim => app.skin_model = SkinModel::Slim,
         Hit::ApplySkinButton => trigger_apply_skin(app),
         Hit::ResetSkinButton => trigger_reset_skin(app),
+        Hit::PreviewSkinButton => trigger_preview_skin(app),
+        Hit::ClearPreviewButton => {
+            app.skin_pending_preview = None;
+            app.status_message = "Preview cleared".into();
+        }
     }
 }
 
@@ -482,6 +487,32 @@ fn copy_selected_log(app: &mut App) {
         }
         Err(e) => app.status_message = format!("Clipboard error: {e}"),
     }
+}
+
+fn trigger_preview_skin(app: &mut App) {
+    let url = app.skin_url_input.trim().to_string();
+    if url.is_empty() {
+        app.status_message = "Paste a skin URL first".into();
+        return;
+    }
+    if app.skin_pending_loading {
+        return;
+    }
+    app.skin_pending_loading = true;
+    app.skin_error = None;
+    app.status_message = "Fetching preview...".into();
+    let client = app.client.clone();
+    let tx = app.worker_tx.clone();
+    tokio::spawn(async move {
+        match skin::fetch_preview(&client, &url).await {
+            Ok(p) => {
+                let _ = tx.send(event::WorkerMsg::SkinPendingLoaded(p));
+            }
+            Err(e) => {
+                let _ = tx.send(event::WorkerMsg::SkinPendingFailed(format!("{e:#}")));
+            }
+        }
+    });
 }
 
 fn trigger_apply_skin(app: &mut App) {

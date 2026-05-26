@@ -100,6 +100,8 @@ pub struct App {
     pub play_inner: Rect,
 
     pub skin_preview: Option<SkinPreview>,
+    pub skin_pending_preview: Option<SkinPreview>,
+    pub skin_pending_loading: bool,
     pub skin_url_input: String,
     pub skin_model: SkinModel,
     pub skin_busy: bool,
@@ -167,6 +169,8 @@ impl App {
             dragging_split: false,
             play_inner: Rect::default(),
             skin_preview: None,
+            skin_pending_preview: None,
+            skin_pending_loading: false,
             skin_url_input: String::new(),
             skin_model: SkinModel::Classic,
             skin_busy: false,
@@ -317,10 +321,22 @@ impl App {
             WorkerMsg::SkinPreviewLoaded(preview) => {
                 self.skin_preview = Some(preview);
             }
+            WorkerMsg::SkinPendingLoaded(preview) => {
+                self.skin_pending_preview = Some(preview);
+                self.skin_pending_loading = false;
+                self.skin_error = None;
+                self.status_message = "Skin previewed — Apply to upload".into();
+            }
+            WorkerMsg::SkinPendingFailed(e) => {
+                self.skin_pending_loading = false;
+                self.skin_error = Some(e.clone());
+                self.status_message = format!("Preview failed: {e}");
+            }
             WorkerMsg::SkinApplied => {
                 self.skin_busy = false;
                 self.skin_error = None;
                 self.skin_url_input.clear();
+                self.skin_pending_preview = None;
                 self.status_message = "Skin updated".into();
             }
             WorkerMsg::SkinFailed(e) => {
