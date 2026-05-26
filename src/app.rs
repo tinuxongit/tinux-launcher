@@ -692,7 +692,16 @@ impl App {
             }
             WorkerMsg::UpdateDownloadFailed(e) => {
                 self.status_message = format!("Update download failed: {e}");
-                self.update_status = UpdateStatus::Failed(e);
+                // Common during a CI race: latest tag exists but the platform asset
+                // hasn't been uploaded yet. Drop back to the "outdated, no asset"
+                // modal so the user can open the release page, or wait and retry.
+                if let UpdateStatus::Downloading { info, .. } = &self.update_status {
+                    let info = info.clone();
+                    self.update_status = UpdateStatus::Outdated(info);
+                    self.update_modal_dismissed = false;
+                } else {
+                    self.update_status = UpdateStatus::Failed(e);
+                }
             }
             WorkerMsg::FabricLoadersLoaded(v) => {
                 self.fabric_loaders = v;

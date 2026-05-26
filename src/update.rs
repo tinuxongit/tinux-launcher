@@ -148,28 +148,60 @@ pub fn spawn_swap_and_restart(new_exe: &Path) -> Result<()> {
     let current = std::env::current_exe().context("locating current exe")?;
     let script_dir = std::env::temp_dir();
     let script_path = script_dir.join("tinux-launcher-update.ps1");
+    let log_path = script_dir.join("tinux-launcher-update.log");
 
     let src = new_exe.display().to_string().replace('\'', "''");
     let dst = current.display().to_string().replace('\'', "''");
+    let log = log_path.display().to_string().replace('\'', "''");
+    // Use cmd.exe's `start` to launch the new exe in its own console window —
+    // Start-Process detaches console apps in a way that leaves the TUI with
+    // nowhere to render. `start "" "<path>"` is the canonical pattern.
     let script = format!(
         "$ErrorActionPreference = 'SilentlyContinue'\r\n\
+         $log = '{log}'\r\n\
+         function Log($m) {{ \"[$([DateTime]::Now.ToString('HH:mm:ss'))] $m\" | Out-File -Append -FilePath $log -Encoding utf8 }}\r\n\
+         Log 'helper started'\r\n\
          Start-Sleep -Seconds 2\r\n\
          $src = '{src}'\r\n\
          $dst = '{dst}'\r\n\
+         Log \"src=$src\"\r\n\
+         Log \"dst=$dst\"\r\n\
          for ($i = 0; $i -lt 30; $i++) {{\r\n\
          \x20\x20  Move-Item -Force -LiteralPath $src -Destination $dst -ErrorAction SilentlyContinue\r\n\
-         \x20\x20  if (Test-Path $dst -PathType Leaf) {{ if (-not (Test-Path $src)) {{ break }} }}\r\n\
+         \x20\x20  if ((Test-Path $dst -PathType Leaf) -and -not (Test-Path $src)) {{ Log \"moved on try $i\"; break }}\r\n\
          \x20\x20  Start-Sleep -Milliseconds 500\r\n\
          }}\r\n\
-         Start-Process -FilePath $dst\r\n"
+         if (Test-Path $src) {{ Log 'WARNING: move never succeeded; launching old location instead' }}\r\n\
+         Log 'launching new exe via ShellExecute'\r\n\
+         try {{\r\n\
+         \x20\x20  $psi = New-Object System.Diagnostics.ProcessStartInfo\r\n\
+         \x20\x20  $psi.FileName = $dst\r\n\
+         \x20\x20  $psi.UseShellExecute = $true\r\n\
+         \x20\x20  $psi.WindowStyle = 'Normal'\r\n\
+         \x20\x20  $proc = [System.Diagnostics.Process]::Start($psi)\r\n\
+         \x20\x20  if ($proc) {{ Log \"launched, pid=$($proc.Id)\" }} else {{ Log 'Start returned $null' }}\r\n\
+         }} catch {{ Log \"launch error: $_\" }}\r\n\
+         Log 'helper done'\r\n"
     );
     std::fs::write(&script_path, script.as_bytes())
         .context("writing update helper script")?;
 
     use std::os::windows::process::CommandExt;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    // CREATE_NO_WINDOW alone — DETACHED_PROCESS makes CREATE_NO_WINDOW a no-op
+    // and PowerShell with no console at all can exit silently before reaching
+    // the first script statement.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    std::process::Command::new("powershell.exe")
+
+    // Record the spawn outcome from Rust's side too, so we can tell whether
+    // the helper was invoked at all even if PowerShell itself never runs.
+    let rust_log_path = script_dir.join("tinux-launcher-update-rust.log");
+    let mut rust_log = String::new();
+    rust_log.push_str(&format!("script: {}\r\n", script_path.display()));
+    rust_log.push_str(&format!("log:    {}\r\n", log_path.display()));
+    rust_log.push_str(&format!("src:    {}\r\n", new_exe.display()));
+    rust_log.push_str(&format!("dst:    {}\r\n", current.display()));
+
+    let spawned = std::process::Command::new("powershell.exe")
         .args([
             "-NoProfile",
             "-WindowStyle",
@@ -179,12 +211,17 @@ pub fn spawn_swap_and_restart(new_exe: &Path) -> Result<()> {
             "-File",
             &script_path.display().to_string(),
         ])
-        .creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW)
+        .creation_flags(CREATE_NO_WINDOW)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn()
-        .context("spawning update helper")?;
+        .spawn();
+    match &spawned {
+        Ok(child) => rust_log.push_str(&format!("spawn: ok, pid={}\r\n", child.id())),
+        Err(e) => rust_log.push_str(&format!("spawn: ERR {e}\r\n")),
+    }
+    let _ = std::fs::write(&rust_log_path, rust_log);
+    spawned.context("spawning update helper")?;
     Ok(())
 }
 
