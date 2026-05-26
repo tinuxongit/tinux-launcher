@@ -85,6 +85,40 @@ pub async fn interactive_login() -> Result<Account> {
     Ok(account)
 }
 
+pub async fn set_skin_url(
+    http: &reqwest::Client,
+    token: &str,
+    model: &str,
+    url: &str,
+) -> Result<()> {
+    let resp = http
+        .post("https://api.minecraftservices.com/minecraft/profile/skins")
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "variant": model, "url": url }))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let s = resp.status();
+        let t = resp.text().await.unwrap_or_default();
+        bail!("set skin HTTP {s}: {t}");
+    }
+    Ok(())
+}
+
+pub async fn reset_skin(http: &reqwest::Client, token: &str) -> Result<()> {
+    let resp = http
+        .delete("https://api.minecraftservices.com/minecraft/profile/skins/active")
+        .bearer_auth(token)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let s = resp.status();
+        let t = resp.text().await.unwrap_or_default();
+        bail!("reset skin HTTP {s}: {t}");
+    }
+    Ok(())
+}
+
 pub fn logout() {
     if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
         let _ = entry.delete_credential();

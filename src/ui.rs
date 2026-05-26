@@ -1,6 +1,7 @@
-use crate::app::{AccountMode, App, Focus, InstallState, LaunchState, VersionFilter};
+use crate::app::{AccountMode, App, Focus, InstallState, LaunchState, SkinModel, VersionFilter};
 use crate::event::{Hit, InstallKind, Tab};
 use crate::news::Block as ArticleBlock;
+use crate::skin::SkinPreviewWidget;
 use crate::theme;
 use ratatui::{
     buffer::Buffer,
@@ -70,7 +71,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     match app.tab {
         Tab::Play => draw_play(f, app, outer[2]),
         Tab::Versions => draw_versions(f, app, outer[2]),
-        Tab::Accounts => draw_accounts(f, app, outer[2]),
+        Tab::Profile => draw_accounts(f, app, outer[2]),
         Tab::Logs => draw_logs(f, app, outer[2]),
     }
     draw_status(f, app, outer[4]);
@@ -592,12 +593,24 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::BORDER))
         .style(theme::base())
-        .title(Span::styled(" Accounts ", theme::accent_bold()));
-    let inner = block.inner(area).inner(Margin {
+        .title(Span::styled(" Profile ", theme::accent_bold()));
+    let full_inner = block.inner(area).inner(Margin {
         horizontal: 2,
         vertical: 1,
     });
     f.render_widget(block, area);
+
+    // Split off a preview column on the right when there's room.
+    let show_preview = full_inner.width >= 60;
+    let (inner, preview_area) = if show_preview {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(2), Constraint::Length(20)])
+            .split(full_inner);
+        (cols[0], Some(cols[2]))
+    } else {
+        (full_inner, None)
+    };
 
     let online = app.account_mode == AccountMode::Online;
 
@@ -628,7 +641,7 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             Some(a) => Line::from(vec![
                 Span::styled("Microsoft: ", theme::dim()),
                 Span::styled(
-                    format!("● {} ({})", a.username, a.uuid),
+                    format!("● {}", a.username),
                     Style::default().fg(theme::ACCENT_HI),
                 ),
             ]),
@@ -671,6 +684,11 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             draw_button(f, app, cols[0], "Sign in (MS)", Hit::LoginButton, true);
         }
         draw_button(f, app, cols[2], "Open config", Hit::OpenConfigButton, false);
+        y += BUTTON_H + 1;
+
+        if app.account.is_some() {
+            draw_skin_section(f, app, inner, y);
+        }
     } else {
         let label_row = row(y);
         let cols = Layout::default()
@@ -689,6 +707,161 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             .constraints([Constraint::Length(28), Constraint::Min(0)])
             .split(field_row);
         draw_offline_name(f, app, cols[0]);
+        y += BUTTON_H + 1;
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Note: vanilla Minecraft uses default Steve/Alex skins in offline mode.",
+                theme::dim(),
+            )))
+            .style(theme::base())
+            .wrap(Wrap { trim: true }),
+            Rect::new(inner.x, y, inner.width, 2),
+        );
+    }
+
+    if let Some(prev_area) = preview_area {
+        draw_skin_preview_box(f, app, prev_area);
+    }
+}
+
+fn draw_skin_section(f: &mut Frame, app: &mut App, inner: Rect, mut y: u16) {
+    let bottom = inner.y + inner.height;
+    if y + 1 >= bottom {
+        return;
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled("Skin", theme::accent_bold())))
+            .style(theme::base()),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 1;
+    if y + 1 >= bottom {
+        return;
+    }
+    let sep_w = inner.width as usize;
+    f.render_widget(
+        Paragraph::new("─".repeat(sep_w))
+            .style(Style::default().fg(theme::BORDER).bg(theme::BG)),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 2;
+    if y + BUTTON_H >= bottom {
+        return;
+    }
+
+    let label_rect = Rect::new(inner.x, y, 7, BUTTON_H);
+    draw_vcentered_label(f, "Model:", label_rect, theme::dim());
+    let seg_rect = Rect::new(inner.x + 8, y, 34, BUTTON_H);
+    draw_segmented(
+        f,
+        app,
+        seg_rect,
+        &[
+            ("Classic", Hit::SkinModelClassic, app.skin_model == SkinModel::Classic),
+            ("Slim", Hit::SkinModelSlim, app.skin_model == SkinModel::Slim),
+        ],
+    );
+    y += BUTTON_H + 1;
+    if y + BUTTON_H >= bottom {
+        return;
+    }
+
+    let label_rect = Rect::new(inner.x, y, 7, BUTTON_H);
+    draw_vcentered_label(f, "URL:", label_rect, theme::dim());
+    let url_w = inner.width.saturating_sub(8).min(44);
+    let url_rect = Rect::new(inner.x + 8, y, url_w, BUTTON_H);
+    draw_skin_url(f, app, url_rect);
+    y += BUTTON_H + 1;
+    if y + BUTTON_H >= bottom {
+        return;
+    }
+
+    let btn_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(15),
+            Constraint::Length(2),
+            Constraint::Length(20),
+            Constraint::Min(0),
+        ])
+        .split(btn_row);
+    if app.skin_busy {
+        draw_disabled_button(f, cols[0], "Working...");
+    } else {
+        draw_button(f, app, cols[0], "Apply skin", Hit::ApplySkinButton, true);
+    }
+    draw_button(f, app, cols[2], "Reset to default", Hit::ResetSkinButton, false);
+}
+
+fn draw_skin_url(f: &mut Frame, app: &mut App, rect: Rect) {
+    let focused = app.focus == Focus::SkinUrl;
+    let hovered = app.hover == Some(Hit::SkinUrlField);
+    let border_fg = if focused {
+        theme::ACCENT
+    } else if hovered {
+        theme::FG_DIM
+    } else {
+        theme::BORDER
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_fg).bg(theme::BG))
+        .style(theme::base());
+    let inner_rect = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let content = if focused {
+        format!("{}▎", app.skin_url_input)
+    } else if app.skin_url_input.is_empty() {
+        "(paste a skin URL, e.g. https://i.imgur.com/...png)".to_string()
+    } else {
+        app.skin_url_input.clone()
+    };
+    let style = if !focused && app.skin_url_input.is_empty() {
+        theme::dim()
+    } else {
+        theme::base()
+    };
+    draw_vcentered_label(f, &format!(" {content}"), inner_rect, style);
+
+    app.click_regions.push((rect, Hit::SkinUrlField));
+}
+
+fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::BORDER))
+        .style(theme::base())
+        .title(Span::styled(" Skin preview ", theme::accent_bold()));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    match &app.skin_preview {
+        Some(preview) => {
+            let cols = preview.cols();
+            let rows = preview.rows();
+            // Center inside inner.
+            let x = inner.x + inner.width.saturating_sub(cols) / 2;
+            let y = inner.y + inner.height.saturating_sub(rows) / 2;
+            let preview_rect = Rect::new(x, y, cols.min(inner.width), rows.min(inner.height));
+            f.render_widget(SkinPreviewWidget { preview }, preview_rect);
+        }
+        None => {
+            let msg = if app.account.is_some() {
+                "Loading skin..."
+            } else {
+                "Sign in to see your skin"
+            };
+            f.render_widget(
+                Paragraph::new(msg)
+                    .style(theme::dim())
+                    .alignment(Alignment::Center),
+                inner,
+            );
+        }
     }
 }
 

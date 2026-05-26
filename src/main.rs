@@ -9,13 +9,14 @@ mod logging;
 mod manifest;
 mod news;
 mod paths;
+mod skin;
 mod theme;
 mod ui;
 mod version;
 mod worker;
 
 use anyhow::Result;
-use app::{AccountMode, App, Focus, LaunchState};
+use app::{AccountMode, App, Focus, LaunchState, SkinModel};
 use crossterm::{
     event::{
         DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEvent,
@@ -169,6 +170,22 @@ fn handle_key(app: &mut App, k: KeyEvent) {
         return;
     }
 
+    if app.focus == Focus::SkinUrl {
+        match k.code {
+            KeyCode::Esc | KeyCode::Enter => app.focus = Focus::None,
+            KeyCode::Backspace => {
+                app.skin_url_input.pop();
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                if app.skin_url_input.chars().count() < 250 {
+                    app.skin_url_input.push(c);
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match k.code {
         KeyCode::Esc if app.viewing_news.is_some() => {
             app.viewing_news = None;
@@ -178,13 +195,13 @@ fn handle_key(app: &mut App, k: KeyEvent) {
         KeyCode::Esc | KeyCode::Char('q') => app.running = false,
         KeyCode::Char('1') => app.tab = Tab::Play,
         KeyCode::Char('2') => app.tab = Tab::Versions,
-        KeyCode::Char('3') => app.tab = Tab::Accounts,
+        KeyCode::Char('3') => app.tab = Tab::Profile,
         KeyCode::Char('4') => app.tab = Tab::Logs,
         KeyCode::Tab => {
             app.tab = match app.tab {
                 Tab::Play => Tab::Versions,
-                Tab::Versions => Tab::Accounts,
-                Tab::Accounts => Tab::Logs,
+                Tab::Versions => Tab::Profile,
+                Tab::Profile => Tab::Logs,
                 Tab::Logs => Tab::Play,
             };
         }
@@ -270,7 +287,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
 
 fn dispatch(app: &mut App, hit: Hit, extend: bool) {
     let prev_focus = app.focus;
-    if hit != Hit::OfflineNameField {
+    if hit != Hit::OfflineNameField && hit != Hit::SkinUrlField {
         app.focus = Focus::None;
     }
     if prev_focus == Focus::OfflineName && app.focus != Focus::OfflineName {
@@ -354,6 +371,11 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             app.status_message = "Opened minecraft.net/articles".into();
         }
         Hit::NewsSplitter => {} // drag handled in handle_mouse
+        Hit::SkinUrlField => app.focus = Focus::SkinUrl,
+        Hit::SkinModelClassic => app.skin_model = SkinModel::Classic,
+        Hit::SkinModelSlim => app.skin_model = SkinModel::Slim,
+        Hit::ApplySkinButton => trigger_apply_skin(app),
+        Hit::ResetSkinButton => trigger_reset_skin(app),
     }
 }
 
@@ -460,6 +482,67 @@ fn copy_selected_log(app: &mut App) {
         }
         Err(e) => app.status_message = format!("Clipboard error: {e}"),
     }
+}
+
+fn trigger_apply_skin(app: &mut App) {
+    let Some(acct) = app.account.clone() else {
+        app.status_message = "Sign in first to change your skin".into();
+        return;
+    };
+    let url = app.skin_url_input.trim().to_string();
+    if url.is_empty() {
+        app.status_message = "Paste a skin URL first".into();
+        return;
+    }
+    if app.skin_busy {
+        return;
+    }
+    app.skin_busy = true;
+    app.skin_error = None;
+    app.status_message = "Applying skin...".into();
+    let client = app.client.clone();
+    let token = acct.access_token;
+    let uuid = acct.uuid;
+    let model = app.skin_model.as_str().to_string();
+    let tx = app.worker_tx.clone();
+    tokio::spawn(async move {
+        match auth::set_skin_url(&client, &token, &model, &url).await {
+            Ok(()) => {
+                let _ = tx.send(event::WorkerMsg::SkinApplied);
+                app::spawn_skin_preview(client, tx, uuid);
+            }
+            Err(e) => {
+                let _ = tx.send(event::WorkerMsg::SkinFailed(format!("{e:#}")));
+            }
+        }
+    });
+}
+
+fn trigger_reset_skin(app: &mut App) {
+    let Some(acct) = app.account.clone() else {
+        app.status_message = "Sign in first".into();
+        return;
+    };
+    if app.skin_busy {
+        return;
+    }
+    app.skin_busy = true;
+    app.status_message = "Resetting skin...".into();
+    let client = app.client.clone();
+    let token = acct.access_token;
+    let uuid = acct.uuid;
+    let tx = app.worker_tx.clone();
+    tokio::spawn(async move {
+        match auth::reset_skin(&client, &token).await {
+            Ok(()) => {
+                let _ = tx.send(event::WorkerMsg::SkinApplied);
+                app::spawn_skin_preview(client, tx, uuid);
+            }
+            Err(e) => {
+                let _ = tx.send(event::WorkerMsg::SkinFailed(format!("{e:#}")));
+            }
+        }
+    });
 }
 
 fn open_config(app: &mut App) {

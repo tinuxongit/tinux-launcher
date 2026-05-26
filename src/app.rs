@@ -4,6 +4,7 @@ use crate::java::{self, JavaInstall};
 use crate::manifest::{self, ManifestVersion, VersionKind, VersionManifest};
 use crate::news::{self, Article, NewsEntry};
 use crate::paths::Paths;
+use crate::skin::SkinPreview;
 use ratatui::layout::Rect;
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -37,6 +38,22 @@ pub enum LaunchState {
 pub enum Focus {
     None,
     OfflineName,
+    SkinUrl,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkinModel {
+    Classic,
+    Slim,
+}
+
+impl SkinModel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SkinModel::Classic => "classic",
+            SkinModel::Slim => "slim",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +98,12 @@ pub struct App {
     pub news_split_top: Option<u16>,
     pub dragging_split: bool,
     pub play_inner: Rect,
+
+    pub skin_preview: Option<SkinPreview>,
+    pub skin_url_input: String,
+    pub skin_model: SkinModel,
+    pub skin_busy: bool,
+    pub skin_error: Option<String>,
 
     pub logs: VecDeque<String>,
     pub log_offset: usize,
@@ -143,6 +166,11 @@ impl App {
             news_split_top: None,
             dragging_split: false,
             play_inner: Rect::default(),
+            skin_preview: None,
+            skin_url_input: String::new(),
+            skin_model: SkinModel::Classic,
+            skin_busy: false,
+            skin_error: None,
             logs: VecDeque::with_capacity(LOG_CAPACITY),
             log_offset: 0,
             java,
@@ -226,8 +254,10 @@ impl App {
             WorkerMsg::AuthSucceeded(a) => {
                 self.auth_in_progress = false;
                 self.status_message = format!("Signed in as {}", a.username);
+                let uuid = a.uuid.clone();
                 self.account = Some(a);
                 self.account_mode = AccountMode::Online;
+                spawn_skin_preview(self.client.clone(), self.worker_tx.clone(), uuid);
             }
             WorkerMsg::AuthFailed(e) => {
                 self.auth_in_progress = false;
@@ -283,6 +313,20 @@ impl App {
                     self.status_message = format!("Couldn't load article: {error}");
                     self.viewing_news = None;
                 }
+            }
+            WorkerMsg::SkinPreviewLoaded(preview) => {
+                self.skin_preview = Some(preview);
+            }
+            WorkerMsg::SkinApplied => {
+                self.skin_busy = false;
+                self.skin_error = None;
+                self.skin_url_input.clear();
+                self.status_message = "Skin updated".into();
+            }
+            WorkerMsg::SkinFailed(e) => {
+                self.skin_busy = false;
+                self.skin_error = Some(e.clone());
+                self.status_message = format!("Skin change failed: {e}");
             }
         }
     }
@@ -342,6 +386,28 @@ pub fn spawn_manifest_fetch(
             Err(e) => {
                 let _ = tx.send(WorkerMsg::ManifestFailed(format!("{e:#}")));
             }
+        }
+    });
+}
+
+pub fn spawn_skin_preview(
+    client: reqwest::Client,
+    tx: UnboundedSender<WorkerMsg>,
+    uuid: String,
+) {
+    tokio::spawn(async move {
+        let url = match crate::skin::current_skin_url(&client, &uuid).await {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::warn!("skin url lookup failed: {e}");
+                return;
+            }
+        };
+        match crate::skin::fetch_preview(&client, &url).await {
+            Ok(p) => {
+                let _ = tx.send(WorkerMsg::SkinPreviewLoaded(p));
+            }
+            Err(e) => tracing::warn!("skin preview fetch failed: {e}"),
         }
     });
 }

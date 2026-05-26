@@ -1,6 +1,7 @@
 use crate::auth::Account;
 use crate::manifest::VersionManifest;
 use crate::news::{Article, NewsEntry};
+use crate::skin::SkinPreview;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,24 +33,29 @@ pub enum Hit {
     OpenArticleExternal,
     OpenAllArticles,
     NewsSplitter,
+    SkinUrlField,
+    SkinModelClassic,
+    SkinModelSlim,
+    ApplySkinButton,
+    ResetSkinButton,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tab {
     Play,
     Versions,
-    Accounts,
+    Profile,
     Logs,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Play, Tab::Versions, Tab::Accounts, Tab::Logs];
+    pub const ALL: [Tab; 4] = [Tab::Play, Tab::Versions, Tab::Profile, Tab::Logs];
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Play => "Play",
             Tab::Versions => "Versions",
-            Tab::Accounts => "Accounts",
+            Tab::Profile => "Profile",
             Tab::Logs => "Logs",
         }
     }
@@ -78,4 +84,7 @@ pub enum WorkerMsg {
     NewsFailed(String),
     ArticleLoaded { index: usize, article: Article },
     ArticleFailed { index: usize, error: String },
+    SkinPreviewLoaded(SkinPreview),
+    SkinApplied,
+    SkinFailed(String),
 }
