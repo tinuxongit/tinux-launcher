@@ -46,6 +46,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Per-OS cache; keyed on Cargo.lock + rustc version.
+          shared-key: release-${{ matrix.os }}
       - name: Build
         run: cargo build --release --locked
       - name: Prepare asset
