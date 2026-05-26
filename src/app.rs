@@ -19,8 +19,6 @@ const LOG_CAPACITY: usize = 1000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VersionFilter {
     Releases,
-    Snapshots,
-    Old,
     Modded,
 }
 
@@ -28,8 +26,6 @@ impl VersionFilter {
     pub fn as_str(self) -> &'static str {
         match self {
             VersionFilter::Releases => "releases",
-            VersionFilter::Snapshots => "snapshots",
-            VersionFilter::Old => "old",
             VersionFilter::Modded => "modded",
         }
     }
@@ -37,9 +33,9 @@ impl VersionFilter {
     pub fn parse(s: &str) -> Option<Self> {
         Some(match s {
             "releases" => VersionFilter::Releases,
-            "snapshots" => VersionFilter::Snapshots,
-            "old" => VersionFilter::Old,
             "modded" => VersionFilter::Modded,
+            // Legacy values from older configs map onto the new model.
+            "snapshots" | "old" => VersionFilter::Releases,
             _ => return None,
         })
     }
@@ -271,6 +267,12 @@ pub struct App {
     pub filters_scroll: u16,
     pub installed_meta: InstanceMeta,
 
+    // Optional include-flags applied within the Releases filter. Hidden when
+    // the Modded filter is selected (Fabric supports snapshots via its own
+    // meta API, but pre-1.13 Old versions don't make sense for Fabric).
+    pub show_snapshots: bool,
+    pub show_older: bool,
+
     pub max_ram_mb: u32,
     pub java_path_input: String,
     pub java_path_for_version_input: String,
@@ -311,6 +313,23 @@ impl App {
             .as_ref()
             .and_then(|c| c.last_filter.as_deref().and_then(VersionFilter::parse))
             .unwrap_or(VersionFilter::Releases);
+        let saved_show_snapshots = cfg_opt
+            .as_ref()
+            .map(|c| c.show_snapshots)
+            .unwrap_or(false);
+        let saved_show_older = cfg_opt
+            .as_ref()
+            .map(|c| c.show_older)
+            .unwrap_or(false);
+        // Legacy mapping: a stored last_filter of "snapshots" or "old" should
+        // automatically flip the matching toggle on so the user sees the same
+        // set of versions as before.
+        let legacy_filter_str = cfg_opt
+            .as_ref()
+            .and_then(|c| c.last_filter.clone())
+            .unwrap_or_default();
+        let saved_show_snapshots = saved_show_snapshots || legacy_filter_str == "snapshots";
+        let saved_show_older = saved_show_older || legacy_filter_str == "old";
         let saved_max_ram = cfg_opt
             .as_ref()
             .and_then(|c| c.max_ram_mb)
@@ -393,6 +412,8 @@ impl App {
             filters_popup_open: false,
             filters_scroll: 0,
             installed_meta: InstanceMeta::default(),
+            show_snapshots: saved_show_snapshots,
+            show_older: saved_show_older,
             max_ram_mb: saved_max_ram,
             java_path_input: saved_java_path,
             java_path_for_version_input: String::new(),
@@ -431,32 +452,36 @@ impl App {
 
     pub fn visible_versions(&self) -> Vec<&ManifestVersion> {
         let Some(m) = &self.manifest else { return Vec::new() };
+        let snapshots = self.show_snapshots;
+        let older = self.show_older;
+        let include_kind = |k: VersionKind| -> bool {
+            match k {
+                VersionKind::Release => true,
+                VersionKind::Snapshot => snapshots,
+                VersionKind::OldBeta | VersionKind::OldAlpha => older,
+            }
+        };
         match self.filter {
             VersionFilter::Releases => m
                 .versions
                 .iter()
-                .filter(|v| v.kind == VersionKind::Release)
-                .collect(),
-            VersionFilter::Snapshots => m
-                .versions
-                .iter()
-                .filter(|v| v.kind == VersionKind::Snapshot)
-                .collect(),
-            VersionFilter::Old => m
-                .versions
-                .iter()
-                .filter(|v| matches!(v.kind, VersionKind::OldBeta | VersionKind::OldAlpha))
+                .filter(|v| include_kind(v.kind))
                 .collect(),
             VersionFilter::Modded => {
+                // Fabric supports stable releases and many snapshots, but no
+                // pre-1.13 versions, so the Older toggle is no-op here.
                 if self.fabric_mc_versions.is_empty() {
                     m.versions
                         .iter()
-                        .filter(|v| v.kind == VersionKind::Release)
+                        .filter(|v| include_kind(v.kind))
                         .collect()
                 } else {
                     m.versions
                         .iter()
-                        .filter(|v| self.fabric_mc_versions.iter().any(|s| s == &v.id))
+                        .filter(|v| {
+                            include_kind(v.kind)
+                                && self.fabric_mc_versions.iter().any(|s| s == &v.id)
+                        })
                         .collect()
                 }
             }

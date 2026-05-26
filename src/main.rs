@@ -524,17 +524,19 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             app.filter = app::VersionFilter::Releases;
             app.list_offset = 0;
         }
-        Hit::FilterSnapshots => {
-            app.filter = app::VersionFilter::Snapshots;
-            app.list_offset = 0;
-        }
-        Hit::FilterOld => {
-            app.filter = app::VersionFilter::Old;
-            app.list_offset = 0;
-        }
         Hit::FilterModded => {
             app.filter = app::VersionFilter::Modded;
             app.list_offset = 0;
+        }
+        Hit::ToggleShowSnapshots => {
+            app.show_snapshots = !app.show_snapshots;
+            app.list_offset = 0;
+            config::save_version_toggles(app.show_snapshots, app.show_older);
+        }
+        Hit::ToggleShowOlder => {
+            app.show_older = !app.show_older;
+            app.list_offset = 0;
+            config::save_version_toggles(app.show_snapshots, app.show_older);
         }
         Hit::BrowseModsButton => {
             if app.selected_modded_installed() {

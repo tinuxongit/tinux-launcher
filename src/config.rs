@@ -14,6 +14,10 @@ pub struct Config {
     pub last_played_version: Option<String>,
     #[serde(default)]
     pub last_filter: Option<String>,
+    #[serde(default)]
+    pub show_snapshots: bool,
+    #[serde(default)]
+    pub show_older: bool,
     /// Max heap in MB used for `-Xmx`. Min is fixed at 512MB.
     #[serde(default)]
     pub max_ram_mb: Option<u32>,
@@ -52,6 +56,13 @@ pub fn save_last_played(version: &str, filter: &str) {
     update(|c| {
         c.last_played_version = Some(version.to_string());
         c.last_filter = Some(filter.to_string());
+    });
+}
+
+pub fn save_version_toggles(show_snapshots: bool, show_older: bool) {
+    update(|c| {
+        c.show_snapshots = show_snapshots;
+        c.show_older = show_older;
     });
 }
 

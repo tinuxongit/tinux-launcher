@@ -865,9 +865,19 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(inner);
 
+    // Filter strip: [ Releases | Modded ]   Show: ✓ Snapshots   ☐ Older
+    let modded_active = app.filter == VersionFilter::Modded;
     let filter_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(64), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(34), // 2-tab segmented control
+            Constraint::Length(3),  // gap
+            Constraint::Length(8),  // "Show:" label
+            Constraint::Length(18), // Snapshots pill
+            Constraint::Length(2),  // gap
+            Constraint::Length(14), // Older pill (hidden when modded)
+            Constraint::Min(0),
+        ])
         .split(rows[0]);
     draw_segmented(
         f,
@@ -880,36 +890,54 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
                 app.filter == VersionFilter::Releases,
             ),
             (
-                "Snapshots",
-                Hit::FilterSnapshots,
-                app.filter == VersionFilter::Snapshots,
-            ),
-            ("Older", Hit::FilterOld, app.filter == VersionFilter::Old),
-            (
                 "Modded",
                 Hit::FilterModded,
-                app.filter == VersionFilter::Modded,
+                modded_active,
             ),
         ],
     );
 
-    if app.filter == VersionFilter::Modded {
-        let hint = match app.latest_stable_fabric_loader() {
-            Some(v) => format!("  Loader: Fabric {v}  ·  install via Play tab"),
-            None => "  Loader: Fabric (loading...)".to_string(),
-        };
-        let hint_rect = filter_cols[1];
-        let mid = hint_rect.height / 2;
-        let lines: Vec<Line> = (0..hint_rect.height)
-            .map(|i| {
-                if i == mid {
-                    Line::from(Span::styled(hint.clone(), theme::dim()))
-                } else {
-                    Line::from("")
-                }
-            })
-            .collect();
-        f.render_widget(Paragraph::new(lines).style(theme::base()), hint_rect);
+    // "Show:" label vertically centered in the strip.
+    {
+        let mid = filter_cols[2].y + filter_cols[2].height / 2;
+        f.render_widget(
+            Paragraph::new(Span::styled("Show:", theme::dim())).style(theme::base()),
+            Rect::new(filter_cols[2].x, mid, filter_cols[2].width, 1),
+        );
+    }
+
+    draw_toggle_pill(
+        f,
+        app,
+        filter_cols[3],
+        "Snapshots",
+        app.show_snapshots,
+        Hit::ToggleShowSnapshots,
+    );
+    // Older only matters in the Releases tab (Fabric doesn't ship for 1.12-).
+    if !modded_active {
+        draw_toggle_pill(
+            f,
+            app,
+            filter_cols[5],
+            "Older",
+            app.show_older,
+            Hit::ToggleShowOlder,
+        );
+    } else if let Some(v) = app.latest_stable_fabric_loader() {
+        // Reuse that column to show the loader hint when modded is active.
+        let hint_rect = Rect::new(
+            filter_cols[5].x,
+            filter_cols[5].y,
+            filter_cols[5].width + filter_cols[6].width,
+            filter_cols[5].height,
+        );
+        let mid = hint_rect.y + hint_rect.height / 2;
+        f.render_widget(
+            Paragraph::new(Span::styled(format!("Loader: Fabric {v}"), theme::dim()))
+                .style(theme::base()),
+            Rect::new(hint_rect.x, mid, hint_rect.width, 1),
+        );
     }
 
     let list_area = rows[2];
@@ -1575,6 +1603,54 @@ fn draw_logs(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_stateful_widget(sb, sb_area, &mut sb_state);
         app.click_regions.push((sb_area, Hit::LogsScrollbar));
     }
+}
+
+/// A 3-row bordered pill toggle. Selected = gold border + ✓ prefix; hovered =
+/// accent border; idle = neutral border. Used for the Snapshots/Older toggles
+/// on the Versions tab.
+fn draw_toggle_pill(
+    f: &mut Frame,
+    app: &mut App,
+    rect: Rect,
+    label: &str,
+    on: bool,
+    hit: Hit,
+) {
+    let hovered = app.hover == Some(hit);
+    let (border_fg, text_fg, modifier) = if on {
+        (theme::GOLD, theme::GOLD, Modifier::BOLD)
+    } else if hovered {
+        (theme::ACCENT_HI, theme::ACCENT_HI, Modifier::BOLD)
+    } else {
+        (theme::BORDER, theme::FG_DIM, Modifier::empty())
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_fg).bg(theme::BG))
+        .style(theme::base());
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+    let text = if on {
+        format!("✓ {label}")
+    } else {
+        format!("  {label}")
+    };
+    let mid = inner.height / 2;
+    let styled = Span::styled(
+        text,
+        Style::default().fg(text_fg).bg(theme::BG).add_modifier(modifier),
+    );
+    let lines: Vec<Line> = (0..inner.height)
+        .map(|i| if i == mid { Line::from(vec![styled.clone()]) } else { Line::from("") })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(theme::base())
+            .alignment(Alignment::Center),
+        inner,
+    );
+    app.click_regions.push((rect, hit));
 }
 
 fn draw_disabled_button(f: &mut Frame, rect: Rect, label: &str) {
