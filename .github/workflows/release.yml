@@ -55,6 +55,7 @@ jobs:
           cp "${{ matrix.bin }}" "dist/${{ matrix.asset }}"
           chmod +x "dist/${{ matrix.asset }}" || true
       - name: Upload release asset
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
