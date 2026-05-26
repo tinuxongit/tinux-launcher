@@ -37,10 +37,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+
+      - name: Compute cache key
+        id: cache-key
+        shell: bash
+        run: |
+          # Strip the version line for our own workspace package from
+          # Cargo.lock before hashing — otherwise every release-tag version
+          # bump invalidates the cache and we eat a full ~4 min recompile.
+          lock_hash=$(sed '/^name = "tinux-launcher"$/{n;/^version = /d;}' Cargo.lock | sha256sum | awk '{print $1}')
+          rustc_hash=$(rustc -vV | sha256sum | awk '{print $1}')
+          echo "key=cargo-${{ runner.os }}-${rustc_hash:0:12}-${lock_hash:0:32}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache cargo + target
+        uses: actions/cache@v4
         with:
-          # Per-OS cache; keyed on Cargo.lock + rustc version.
-          shared-key: release-${{ matrix.os }}
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ steps.cache-key.outputs.key }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
       - name: Build
         run: cargo build --release --locked
       - name: Prepare asset
