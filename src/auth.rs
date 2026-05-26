@@ -1,9 +1,3 @@
-//! Microsoft OAuth -> Xbox Live -> XSTS -> Minecraft Services token chain.
-//!
-//! Requires a Microsoft Entra (Azure AD) application registration with personal-account
-//! support and a redirect URI of `http://localhost:<port>/callback`. Set the client id
-//! via the `TINUX_MS_CLIENT_ID` environment variable.
-
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
@@ -12,10 +6,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use url::Url;
 
-// We bind to 127.0.0.1 to listen for the callback (a real IP, since tokio's TcpListener
-// won't resolve names) but advertise "localhost" in the redirect URI. Azure treats
-// http://localhost specially for public clients — it accepts any port, so we don't
-// have to hard-code one in the app registration.
 const BIND_HOST: &str = "127.0.0.1";
 const REDIRECT_HOST: &str = "localhost";
 const AUTH_BASE: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
@@ -36,14 +26,6 @@ pub struct Account {
     pub refresh_token: Option<String>,
 }
 
-/// Paste your Azure app's Application (client) ID here and recompile to ship Tinux with
-/// sign-in working out of the box for every user — this is exactly how Modrinth App,
-/// PrismLauncher, ATLauncher, etc. distribute their launchers. The id is **not** a
-/// secret: it's the launcher's public identity, paired with PKCE for safety. Users
-/// still sign in with their own Microsoft accounts; this id just tells Microsoft
-/// which app is asking.
-///
-/// Leave as `None` and Tinux falls back to env var → config.json (developer mode).
 const BAKED_CLIENT_ID: Option<&str> = Some("164bca05-6a7e-4142-990e-540a7aae3f18");
 
 pub fn client_id() -> Option<String> {
@@ -62,12 +44,7 @@ pub fn client_id() -> Option<String> {
 }
 
 pub async fn interactive_login() -> Result<Account> {
-    let client_id = client_id().ok_or_else(|| {
-        anyhow!(
-            "Microsoft client id missing. Paste your Azure app's Application (client) ID \
-             into config.json (see the Accounts tab for the path) or set TINUX_MS_CLIENT_ID."
-        )
-    })?;
+    let client_id = client_id().ok_or_else(|| anyhow!("no client id configured"))?;
 
     let listener = TcpListener::bind((BIND_HOST, 0u16)).await?;
     let port = listener.local_addr()?.port();
@@ -87,9 +64,6 @@ pub async fn interactive_login() -> Result<Account> {
         .append_pair("state", &state)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256")
-        // Always show the account picker — otherwise Microsoft silently re-uses the
-        // browser's existing session, which traps users on whichever MS account they
-        // signed in with first (often not the one that owns Minecraft).
         .append_pair("prompt", "select_account");
 
     webbrowser::open(auth_url.as_str()).context("opening browser for sign-in")?;
@@ -127,8 +101,6 @@ fn pkce_pair() -> (String, String) {
 }
 
 mod sha2_impl {
-    // Minimal SHA-256 implementation for PKCE S256.
-    // Source: public-domain reference (FIPS 180-4).
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
         0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
@@ -389,16 +361,7 @@ async fn mc_login(http: &reqwest::Client, uhs: &str, xsts_token: &str) -> Result
     let status = resp.status();
     if !status.is_success() {
         let body = resp.text().await.unwrap_or_default();
-        let hint = if status.as_u16() == 403 {
-            "\n\nThis launcher's Azure App ID isn't approved by Mojang yet. Microsoft now \
-             requires third-party launchers to whitelist their client id. Submit it at \
-             https://aka.ms/mce-reviewappid (needs the Client ID + Tenant ID from the \
-             Azure portal) and allow up to 24h after approval. Offline mode still works \
-             in the meantime."
-        } else {
-            ""
-        };
-        bail!("Minecraft login HTTP {status}: {body}{hint}");
+        bail!("Minecraft login HTTP {status}: {body}");
     }
     let r: McLoginResp = resp.json().await?;
     Ok(r.access_token)

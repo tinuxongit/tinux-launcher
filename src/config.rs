@@ -21,8 +21,6 @@ pub fn path() -> Option<PathBuf> {
         .map(|d| d.data_dir().join("config.json"))
 }
 
-/// Make sure a `config.json` exists so users have something to open and edit.
-/// Existing files are left alone.
 pub fn ensure_stub() {
     let Some(p) = path() else { return };
     if p.exists() {
@@ -31,11 +29,7 @@ pub fn ensure_stub() {
     if let Some(parent) = p.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let stub = serde_json::json!({
-        "_help": "Paste your Microsoft Entra (Azure) Application (client) ID below.",
-        "_docs": "See README.md → 'Microsoft sign-in' for the 5-minute Azure setup.",
-        "ms_client_id": null
-    });
+    let stub = serde_json::json!({ "ms_client_id": null });
     let _ = std::fs::write(&p, serde_json::to_vec_pretty(&stub).unwrap_or_default());
 }
 

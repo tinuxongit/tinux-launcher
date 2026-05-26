@@ -33,7 +33,6 @@ use tokio::sync::mpsc::unbounded_channel;
 async fn main() -> Result<()> {
     let paths = paths::Paths::resolve()?;
     let _log_guard = logging::init(&paths.logs)?;
-    // Drop a stub config.json so the Accounts tab can show users a file to open.
     config::ensure_stub();
 
     tracing::info!("Tinux Launcher starting; data dir: {}", paths.root.display());
@@ -43,8 +42,6 @@ async fn main() -> Result<()> {
     app::spawn_manifest_fetch(app.client.clone(), worker_tx.clone());
 
     let mut terminal = setup_terminal()?;
-    // Clear in case the host terminal was already polluted (e.g. previous run of
-    // this launcher exited with stray glyphs that the OS terminal still holds onto).
     terminal.clear()?;
     let result = run_loop(&mut terminal, &mut app, &mut worker_rx).await;
     restore_terminal(&mut terminal)?;
@@ -84,9 +81,6 @@ async fn run_loop(
     let mut last_tab = app.tab;
 
     while app.running {
-        // Force a full repaint on tab changes — wiping cells in the back buffer is not
-        // always enough when something has scribbled past ratatui (or when stale wide-
-        // char skip flags survived).
         if app.tab != last_tab {
             app.needs_clear = true;
             last_tab = app.tab;
@@ -148,7 +142,6 @@ fn handle_key(app: &mut App, k: KeyEvent) {
         }
     }
 
-    // While a text field has focus, keys go to the field.
     if app.focus == Focus::OfflineName {
         match k.code {
             KeyCode::Esc | KeyCode::Enter => {
@@ -232,7 +225,6 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
 }
 
 fn dispatch(app: &mut App, hit: Hit, extend: bool) {
-    // Any click that isn't on the offline-name field releases its focus.
     if hit != Hit::OfflineNameField {
         app.focus = Focus::None;
     }
@@ -270,8 +262,6 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             app.tab = Tab::Play;
         }
         Hit::LogRow(i) => {
-            // Ctrl+click extends the current selection (keeping the original anchor);
-            // a plain click starts a fresh single-line selection.
             if extend {
                 if let Some((anchor, _)) = app.selected_log_range {
                     app.selected_log_range = Some((anchor, i));

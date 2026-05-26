@@ -72,7 +72,6 @@ pub async fn do_install_and_launch(
     };
     let _ = tx.send(WorkerMsg::InstallDone(version_id.clone()));
 
-    // Re-read version json for arguments
     let details_path = paths.version_json(&version_id);
     let details: VersionDetails = match tokio::fs::read(&details_path).await {
         Ok(b) => match serde_json::from_slice(&b) {

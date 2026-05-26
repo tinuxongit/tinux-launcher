@@ -15,14 +15,6 @@ use ratatui::{
 const HEADER_HEIGHT: u16 = 3;
 const STATUS_HEIGHT: u16 = 1;
 
-/// Solid fill — fully resets every cell in `area` and applies the given style.
-///
-/// We call `Cell::reset()` (not just `set_symbol(" ")`) because ratatui marks the second
-/// column of a wide unicode glyph with `Cell::skip = true` so it isn't double-rendered.
-/// `set_symbol` does NOT clear that flag, so if a prior frame put a wide char there, the
-/// terminal never receives an update for that column — even though our buffer thinks it
-/// wrote a space. Fast log scrolling makes the bleed obvious because every frame leaves
-/// fresh skip flags behind.
 struct Fill {
     style: Style,
 }
@@ -53,10 +45,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let size = f.area();
     app.last_size = size;
 
-    // wipe every cell — glyph AND style — so nothing from prior frames leaks.
     wipe(f, size);
 
-    // padded inner frame so the UI never touches terminal edges
     let frame = size.inner(Margin {
         horizontal: 2,
         vertical: 1,
@@ -93,7 +83,6 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    // title + tabs row
     let title = Span::styled(
         " ⛏  Tinux Launcher",
         Style::default()
@@ -128,7 +117,6 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
         x += w + 1;
     }
 
-    // separator
     let sep: String = "─".repeat(rows[1].width as usize);
     f.render_widget(
         Paragraph::new(sep).style(Style::default().fg(theme::BORDER).bg(theme::BG)),
@@ -149,9 +137,6 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     });
     f.render_widget(block, area);
 
-    // Every interactive row is exactly 1 cell tall with explicit 1-row gaps so that
-    // underlined input fields don't extend onto a second row, and so button rects
-    // don't render with text on the top row and empty colored space on the bottom.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -470,7 +455,6 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
     let mut y = inner.y;
     let row = |yy: u16| Rect::new(inner.x, yy, inner.width, 1);
 
-    // Current account
     let ms_line = match &app.account {
         Some(a) => Line::from(vec![
             Span::styled("Microsoft: ", theme::dim()),
@@ -488,8 +472,6 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
     y += 2;
 
     if !signed_in && !has_client {
-        // Step-by-step setup, since Microsoft requires every launcher to ship its own
-        // Azure app registration — there is no shared client id.
         let header = Span::styled(
             "Sign-in needs your own Azure app (free, ~5 min):",
             Style::default()
@@ -551,7 +533,6 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
         y += err_rect.height + 1;
     }
 
-    // Button row (sign in / out + open config)
     let btn_row_rect = row(y);
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -580,7 +561,6 @@ fn draw_logs(f: &mut Frame, app: &mut App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Toolbar row at the top: Copy line / Copy all + hint.
     let body = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

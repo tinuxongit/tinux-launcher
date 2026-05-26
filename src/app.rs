@@ -69,13 +69,8 @@ pub struct App {
     pub java: Option<JavaInstall>,
     pub status_message: String,
 
-    /// Set when the next frame must force a full terminal repaint (e.g. after a child
-    /// process that may have written directly to our console exits).
     pub needs_clear: bool,
 
-    /// Inclusive `(anchor, end)` range over `logs` indices selected for copy. Equal
-    /// values mean a single line is selected. The anchor stays fixed across shift+click
-    /// extensions; only the end moves.
     pub selected_log_range: Option<(usize, usize)>,
 
     pub worker_tx: UnboundedSender<WorkerMsg>,
@@ -129,7 +124,6 @@ impl App {
     pub fn push_log(&mut self, line: String) {
         if self.logs.len() == LOG_CAPACITY {
             self.logs.pop_front();
-            // Indices in the VecDeque just shifted by 1; keep the selection consistent.
             if let Some((a, b)) = self.selected_log_range {
                 if a == 0 || b == 0 {
                     self.selected_log_range = None;
@@ -209,7 +203,6 @@ impl App {
             WorkerMsg::LaunchStarted(v) => {
                 self.launch_state = LaunchState::Running;
                 self.status_message = format!("Launched {v}");
-                // Java may scribble onto our terminal before we can stop it; flush.
                 self.needs_clear = true;
             }
             WorkerMsg::LaunchLog(line) => {
@@ -218,7 +211,6 @@ impl App {
             WorkerMsg::LaunchExited(code) => {
                 self.launch_state = LaunchState::JustExited(code);
                 self.status_message = format!("Minecraft exited with code {code}");
-                // Repaint over anything the child wrote directly to the terminal.
                 self.needs_clear = true;
             }
             WorkerMsg::LaunchFailed(e) => {
@@ -231,8 +223,6 @@ impl App {
     }
 }
 
-/// Strip ANSI escape sequences and other control bytes from a log line, expanding tabs
-/// to four spaces so indentation renders consistently in the ratatui buffer.
 fn sanitize_log(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut iter = s.chars();

@@ -9,9 +9,6 @@ pub struct JavaInstall {
 }
 
 impl JavaInstall {
-    /// Path to use when spawning Minecraft. On Windows we prefer `javaw.exe` over
-    /// `java.exe` so the JVM is in the GUI subsystem and won't try to write to our
-    /// terminal's console (which leaks past `Stdio::piped`).
     pub fn launch_path(&self) -> PathBuf {
         #[cfg(windows)]
         {

@@ -70,15 +70,11 @@ pub async fn launch(
         plan.asset_legacy_or_resources,
         AssetLayout::Legacy | AssetLayout::PreVirtual
     ) {
-        // For ancient versions we'd materialize assets here; we leave it as a
-        // best-effort empty dir for now.
         std::fs::create_dir_all(&assets_root)?;
     }
 
     let mut cmd = Command::new(java.launch_path());
     cmd.current_dir(&game_dir);
-    // Sever the child from our terminal: pipe stdin to nothing, and on Windows
-    // detach from our console so native libs can't WriteConsole past the pipes.
     cmd.stdin(Stdio::null());
     #[cfg(windows)]
     {
@@ -115,7 +111,6 @@ pub async fn launch(
             push_arg(&mut cmd, e, &ctx);
         }
     } else {
-        // pre-1.13 default JVM args
         cmd.arg("-cp").arg(&cp);
     }
 
@@ -227,9 +222,7 @@ fn substitute(s: &str, ctx: &ArgContext<'_>) -> String {
     }
     out = out.replace("${launcher_name}", ctx.launcher_name);
     out = out.replace("${launcher_version}", ctx.launcher_version);
-    // Legacy session token used by old versions: same as access token here.
     out = out.replace("${auth_session}", ctx.auth_access_token);
-    // user_properties was removed in 1.8+, default to {}
     out = out.replace("${user_properties}", "{}");
     out
 }
