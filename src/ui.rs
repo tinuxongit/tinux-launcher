@@ -214,8 +214,9 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(22), Constraint::Min(0)])
         .split(rows[3]);
-    let installed = app.selected_is_installed();
-    if installed {
+    if app.install_in_progress() {
+        draw_disabled_button(f, btn_cols[0], "Installing...");
+    } else if app.selected_is_installed() {
         draw_button(f, app, btn_cols[0], "▶  Launch", Hit::LaunchButton, true);
     } else {
         draw_button(f, app, btn_cols[0], "⬇  Install", Hit::InstallButton, true);
@@ -754,6 +755,31 @@ fn draw_logs(f: &mut Frame, app: &mut App, area: Rect) {
             .end_symbol(None);
         f.render_stateful_widget(sb, sb_area, &mut sb_state);
     }
+}
+
+fn draw_disabled_button(f: &mut Frame, rect: Rect, label: &str) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::BORDER).bg(theme::BG));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mid = inner.height / 2;
+    let styled = Span::styled(
+        label,
+        Style::default().fg(theme::FG_DIM).bg(theme::BG),
+    );
+    let lines: Vec<Line> = (0..inner.height)
+        .map(|i| if i == mid { Line::from(vec![styled.clone()]) } else { Line::from("") })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(theme::base())
+            .alignment(Alignment::Center),
+        inner,
+    );
+    // Intentionally no click region — disabled buttons swallow no events.
 }
 
 fn draw_button(

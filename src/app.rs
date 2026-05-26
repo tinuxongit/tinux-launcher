@@ -172,6 +172,10 @@ impl App {
         self.paths.version_json(id).exists() && self.paths.version_jar(id).exists()
     }
 
+    pub fn install_in_progress(&self) -> bool {
+        self.install.is_some()
+    }
+
     pub fn ensure_default_selection(&mut self) {
         if self.selected_version.is_some() {
             return;

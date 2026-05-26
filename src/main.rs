@@ -307,13 +307,14 @@ fn trigger_login(app: &mut App) {
 }
 
 fn trigger_install(app: &mut App) {
+    if app.install_in_progress() {
+        app.status_message = "Install already running".into();
+        return;
+    }
     let Some(entry) = app.selected_manifest_entry() else {
         app.status_message = "Pick a version first (Versions tab)".into();
         return;
     };
-    if app.install.is_some() {
-        return;
-    }
     let client = app.client.clone();
     let paths_clone = clone_paths(&app.paths);
     let tx = app.worker_tx.clone();
@@ -324,6 +325,10 @@ fn trigger_install(app: &mut App) {
 
 fn trigger_launch(app: &mut App) {
     if app.launch_state == LaunchState::Running {
+        return;
+    }
+    if app.install_in_progress() {
+        app.status_message = "Install in progress — wait for it to finish".into();
         return;
     }
     let Some(entry) = app.selected_manifest_entry() else {
