@@ -33,15 +33,6 @@ jobs:
           - os: windows-latest
             asset: tinux-launcher-windows-x64.exe
             bin: target/release/tinux-launcher.exe
-          - os: ubuntu-latest
-            asset: tinux-launcher-linux-x64
-            bin: target/release/tinux-launcher
-          - os: macos-13
-            asset: tinux-launcher-macos-x64
-            bin: target/release/tinux-launcher
-          - os: macos-14
-            asset: tinux-launcher-macos-arm64
-            bin: target/release/tinux-launcher
 
     steps:
       - uses: actions/checkout@v4
