@@ -7,13 +7,15 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Widget, Wrap,
+        Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+        Widget, Wrap,
     },
     Frame,
 };
 
 const HEADER_HEIGHT: u16 = 3;
 const STATUS_HEIGHT: u16 = 1;
+const BUTTON_H: u16 = 3;
 
 struct Fill {
     style: Style,
@@ -77,62 +79,79 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // title + tabs
-            Constraint::Length(1), // separator
-            Constraint::Length(1), // bottom spacing inside header
+            Constraint::Length(1), // title + version
+            Constraint::Length(1), // tabs
+            Constraint::Length(1), // separator + active-tab underline
         ])
         .split(area);
 
-    let title = Span::styled(
-        " ⛏  Tinux Launcher",
-        Style::default()
-            .fg(theme::ACCENT_HI)
-            .add_modifier(Modifier::BOLD),
-    );
-    let title_w = title.width() as u16;
-    f.render_widget(
-        Paragraph::new(Line::from(vec![title])).style(theme::base()),
-        Rect::new(rows[0].x, rows[0].y, title_w.min(rows[0].width), 1),
-    );
+    let title = Line::from(vec![
+        Span::styled(
+            " ⛏  Tinux Launcher",
+            Style::default()
+                .fg(theme::ACCENT_HI)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  v{}", env!("CARGO_PKG_VERSION")),
+            theme::dim(),
+        ),
+    ]);
+    f.render_widget(Paragraph::new(title).style(theme::base()), rows[0]);
 
-    let mut x = rows[0].x + title_w + 3;
+    let mut x = rows[1].x + 1;
+    let mut active_seg: Option<(u16, u16)> = None;
     for tab in Tab::ALL {
         let label = format!(" {} ", tab.label());
         let w = label.chars().count() as u16;
-        if x + w > rows[0].x + rows[0].width {
+        if x + w > rows[1].x + rows[1].width {
             break;
         }
-        let rect = Rect::new(x, rows[0].y, w, 1);
+        let rect = Rect::new(x, rows[1].y, w, 1);
         let active = app.tab == tab;
         let hovered = app.hover == Some(Hit::Tab(tab));
         let style = if active {
-            theme::button_hover()
+            Style::default()
+                .fg(theme::ACCENT)
+                .bg(theme::BG)
+                .add_modifier(Modifier::BOLD)
         } else if hovered {
-            theme::button_idle().add_modifier(Modifier::BOLD)
+            Style::default().fg(theme::FG).bg(theme::BG)
         } else {
-            theme::button_idle()
+            Style::default().fg(theme::FG_DIM).bg(theme::BG)
         };
         f.render_widget(Paragraph::new(label).style(style), rect);
         app.click_regions.push((rect, Hit::Tab(tab)));
-        x += w + 1;
+        if active {
+            active_seg = Some((x, w));
+        }
+        x += w + 2;
     }
 
-    let sep: String = "─".repeat(rows[1].width as usize);
+    let sep: String = "─".repeat(rows[2].width as usize);
     f.render_widget(
         Paragraph::new(sep).style(Style::default().fg(theme::BORDER).bg(theme::BG)),
-        rows[1],
+        rows[2],
     );
+    if let Some((ax, aw)) = active_seg {
+        let overlay = "━".repeat(aw as usize);
+        f.render_widget(
+            Paragraph::new(overlay).style(Style::default().fg(theme::ACCENT).bg(theme::BG)),
+            Rect::new(ax, rows[2].y, aw, 1),
+        );
+    }
 }
 
 fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     wipe(f, area);
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::BORDER))
         .style(theme::base())
         .title(Span::styled(" Play ", theme::accent_bold()));
     let inner = block.inner(area).inner(Margin {
-        horizontal: 1,
+        horizontal: 2,
         vertical: 1,
     });
     f.render_widget(block, area);
@@ -140,15 +159,15 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // 0 Selected: ...
-            Constraint::Length(1), // 1 gap
-            Constraint::Length(1), // 2 buttons
-            Constraint::Length(1), // 3 gap
-            Constraint::Length(1), // 4 Account: ...
-            Constraint::Length(1), // 5 gap
-            Constraint::Length(1), // 6 offline row
-            Constraint::Length(1), // 7 gap
-            Constraint::Length(2), // 8 progress (bar + label)
+            Constraint::Length(1),        // 0 Selected: ...
+            Constraint::Length(1),        // 1 gap
+            Constraint::Length(BUTTON_H), // 2 buttons (tall)
+            Constraint::Length(1),        // 3 gap
+            Constraint::Length(1),        // 4 Account: ...
+            Constraint::Length(1),        // 5 gap
+            Constraint::Length(BUTTON_H), // 6 offline row (tall)
+            Constraint::Length(1),        // 7 gap
+            Constraint::Length(2),        // 8 progress
             Constraint::Min(0),
         ])
         .split(inner);
@@ -156,7 +175,7 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     let sel = app
         .selected_manifest_entry()
         .map(|v| format!("{} ({})", v.id, v.kind.label()))
-        .unwrap_or_else(|| "(no version selected — open the Versions tab)".to_string());
+        .unwrap_or_else(|| "(no version selected)".to_string());
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("Selected: ", theme::dim()),
@@ -169,14 +188,14 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     let buttons = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(14),
+            Constraint::Length(18),
             Constraint::Length(2),
-            Constraint::Length(14),
+            Constraint::Length(18),
             Constraint::Min(0),
         ])
         .split(rows[2]);
-    draw_button(f, app, buttons[0], "▶ Launch", Hit::LaunchButton, true);
-    draw_button(f, app, buttons[2], "⬇ Install", Hit::InstallButton, false);
+    draw_button(f, app, buttons[0], "▶  Launch", Hit::LaunchButton, true);
+    draw_button(f, app, buttons[2], "⬇  Install", Hit::InstallButton, false);
 
     let acct_line = if let Some(a) = &app.account {
         Line::from(vec![
@@ -202,17 +221,14 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     let offline_row = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(16),
+            Constraint::Length(15),
             Constraint::Length(22),
             Constraint::Length(2),
-            Constraint::Length(16),
+            Constraint::Length(18),
             Constraint::Min(0),
         ])
         .split(rows[6]);
-    f.render_widget(
-        Paragraph::new("Offline name:").style(theme::dim()),
-        offline_row[0],
-    );
+    draw_vcentered_label(f, "Offline name:", offline_row[0], theme::dim());
     draw_offline_name(f, app, offline_row[1]);
     if app.account.is_some() {
         draw_button(f, app, offline_row[3], "Sign out", Hit::LogoutButton, false);
@@ -223,35 +239,40 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     draw_progress(f, app, rows[8]);
 }
 
+fn draw_vcentered_label(f: &mut Frame, label: &str, rect: Rect, style: Style) {
+    let mid = rect.height / 2;
+    let lines: Vec<Line> = (0..rect.height)
+        .map(|i| if i == mid { Line::from(label) } else { Line::from("") })
+        .collect();
+    f.render_widget(Paragraph::new(lines).style(style), rect);
+}
+
 fn draw_offline_name(f: &mut Frame, app: &mut App, rect: Rect) {
     let focused = app.focus == Focus::OfflineName;
-    let mut content = format!(" {}", app.offline_name);
-    if focused {
-        content.push('▎');
+    let hovered = app.hover == Some(Hit::OfflineNameField);
+    let border_fg = if focused {
+        theme::ACCENT
+    } else if hovered {
+        theme::FG_DIM
     } else {
-        content.push(' ');
-    }
-    while content.chars().count() < rect.width as usize {
-        content.push(' ');
-    }
-
-    let style = if focused {
-        Style::default()
-            .fg(theme::ACCENT_HI)
-            .bg(theme::PANEL)
-            .add_modifier(Modifier::UNDERLINED)
-    } else if app.hover == Some(Hit::OfflineNameField) {
-        Style::default()
-            .fg(theme::FG)
-            .bg(theme::PANEL_HI)
-            .add_modifier(Modifier::UNDERLINED)
-    } else {
-        Style::default()
-            .fg(theme::FG)
-            .bg(theme::PANEL_HI)
-            .add_modifier(Modifier::UNDERLINED)
+        theme::BORDER
     };
-    f.render_widget(Paragraph::new(content).style(style), rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_fg).bg(theme::BG))
+        .style(theme::base());
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let content = if focused {
+        format!("{}▎", app.offline_name)
+    } else {
+        app.offline_name.clone()
+    };
+    draw_vcentered_label(f, &format!(" {content}"), inner, theme::base());
+
     app.click_regions.push((rect, Hit::OfflineNameField));
 }
 
@@ -663,21 +684,67 @@ fn draw_button(
     primary: bool,
 ) {
     let hovered = app.hover == Some(hit);
-    let style = if primary && hovered {
-        theme::button_primary().add_modifier(Modifier::REVERSED)
+    // Single-row variant: flat colored rect, no border.
+    if rect.height < 3 {
+        let style = if primary {
+            theme::button_primary()
+        } else if hovered {
+            theme::button_hover()
+        } else {
+            theme::button_idle()
+        };
+        f.render_widget(
+            Paragraph::new(label)
+                .style(style)
+                .alignment(Alignment::Center),
+            rect,
+        );
+        app.click_regions.push((rect, hit));
+        return;
+    }
+
+    let (bg, fg, border_fg) = if primary && hovered {
+        (theme::ACCENT_HI, theme::BG, theme::ACCENT_HI)
     } else if primary {
-        theme::button_primary()
+        (theme::GOLD, theme::BG, theme::GOLD)
     } else if hovered {
-        theme::button_hover()
+        (theme::PANEL_HI, theme::FG, theme::FG_DIM)
     } else {
-        theme::button_idle()
+        (theme::PANEL_HI, theme::FG, theme::BORDER)
     };
-    f.render_widget(
-        Paragraph::new(label)
-            .style(style)
-            .alignment(Alignment::Center),
-        rect,
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_fg).bg(theme::BG))
+        .style(Style::default().bg(bg));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mid = inner.height / 2;
+    let bold_label = Span::styled(
+        label,
+        Style::default()
+            .fg(fg)
+            .bg(bg)
+            .add_modifier(Modifier::BOLD),
     );
+    let lines: Vec<Line> = (0..inner.height)
+        .map(|i| {
+            if i == mid {
+                Line::from(vec![bold_label.clone()])
+            } else {
+                Line::from(Span::styled(" ", Style::default().bg(bg)))
+            }
+        })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().bg(bg))
+            .alignment(Alignment::Center),
+        inner,
+    );
+
     app.click_regions.push((rect, hit));
 }
 
@@ -687,18 +754,39 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         None => "no Java".into(),
     };
     let acct = match &app.account {
-        Some(a) => format!("● {}", a.username),
-        None => "● offline".into(),
+        Some(a) => a.username.clone(),
+        None => "offline".into(),
     };
-    let line = Line::from(vec![
-        Span::styled(" ", theme::base()),
-        Span::styled(acct, Style::default().fg(theme::ACCENT)),
-        Span::styled("  •  ", theme::dim()),
+    let dot = Span::styled("● ", Style::default().fg(theme::ACCENT).bg(theme::BG));
+    let sp = Span::styled("   ", theme::base());
+
+    let left = Line::from(vec![
+        dot.clone(),
+        Span::styled(acct, theme::dim()),
+        sp.clone(),
+        dot.clone(),
         Span::styled(java, theme::dim()),
-        Span::styled("  •  ", theme::dim()),
+        sp,
+        dot,
         Span::styled(app.status_message.clone(), theme::dim()),
     ]);
-    f.render_widget(Paragraph::new(line).style(theme::base()), area);
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(22)])
+        .split(area);
+    f.render_widget(Paragraph::new(left).style(theme::base()), cols[0]);
+
+    let right = Line::from(vec![
+        Span::styled("📦 ", Style::default().fg(theme::ACCENT).bg(theme::BG)),
+        Span::styled("Enjoy your game!", theme::dim()),
+    ]);
+    f.render_widget(
+        Paragraph::new(right)
+            .style(theme::base())
+            .alignment(Alignment::Right),
+        cols[1],
+    );
 }
 
 pub fn hit_test(app: &App, col: u16, row: u16) -> Option<Hit> {
