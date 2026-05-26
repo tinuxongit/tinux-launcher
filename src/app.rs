@@ -2,7 +2,7 @@ use crate::auth::Account;
 use crate::event::{Hit, InstallKind, Tab, WorkerMsg};
 use crate::java::{self, JavaInstall};
 use crate::manifest::{self, ManifestVersion, VersionKind, VersionManifest};
-use crate::news::{self, NewsEntry};
+use crate::news::{self, Article, NewsEntry};
 use crate::paths::Paths;
 use ratatui::layout::Rect;
 use std::collections::VecDeque;
@@ -74,6 +74,10 @@ pub struct App {
 
     pub news: Vec<NewsEntry>,
     pub news_offset: usize,
+    pub viewing_news: Option<usize>,
+    pub article: Option<Article>,
+    pub article_loading: bool,
+    pub article_offset: u16,
 
     pub logs: VecDeque<String>,
     pub log_offset: usize,
@@ -125,6 +129,10 @@ impl App {
             launch_error: None,
             news: Vec::new(),
             news_offset: 0,
+            viewing_news: None,
+            article: None,
+            article_loading: false,
+            article_offset: 0,
             logs: VecDeque::with_capacity(LOG_CAPACITY),
             log_offset: 0,
             java,
@@ -252,6 +260,20 @@ impl App {
             WorkerMsg::NewsFailed(e) => {
                 tracing::warn!("news fetch failed: {e}");
             }
+            WorkerMsg::ArticleLoaded { index, article } => {
+                if self.viewing_news == Some(index) {
+                    self.article = Some(article);
+                    self.article_loading = false;
+                    self.article_offset = 0;
+                }
+            }
+            WorkerMsg::ArticleFailed { index, error } => {
+                if self.viewing_news == Some(index) {
+                    self.article_loading = false;
+                    self.status_message = format!("Couldn't load article: {error}");
+                    self.viewing_news = None;
+                }
+            }
         }
     }
 }
@@ -322,6 +344,27 @@ pub fn spawn_news_fetch(client: reqwest::Client, tx: UnboundedSender<WorkerMsg>)
             }
             Err(e) => {
                 let _ = tx.send(WorkerMsg::NewsFailed(format!("{e:#}")));
+            }
+        }
+    });
+}
+
+pub fn spawn_article_fetch(
+    client: reqwest::Client,
+    tx: UnboundedSender<WorkerMsg>,
+    index: usize,
+    content_path: String,
+) {
+    tokio::spawn(async move {
+        match news::fetch_article(&client, &content_path).await {
+            Ok(article) => {
+                let _ = tx.send(WorkerMsg::ArticleLoaded { index, article });
+            }
+            Err(e) => {
+                let _ = tx.send(WorkerMsg::ArticleFailed {
+                    index,
+                    error: format!("{e:#}"),
+                });
             }
         }
     });

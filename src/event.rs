@@ -1,6 +1,6 @@
 use crate::auth::Account;
 use crate::manifest::VersionManifest;
-use crate::news::NewsEntry;
+use crate::news::{Article, NewsEntry};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +28,7 @@ pub enum Hit {
     ModeOffline,
     ModeOnline,
     NewsItem(usize),
+    CloseArticle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -72,4 +73,6 @@ pub enum WorkerMsg {
     LaunchFailed(String),
     NewsLoaded(Vec<NewsEntry>),
     NewsFailed(String),
+    ArticleLoaded { index: usize, article: Article },
+    ArticleFailed { index: usize, error: String },
 }

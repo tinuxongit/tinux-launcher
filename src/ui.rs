@@ -1,5 +1,6 @@
 use crate::app::{AccountMode, App, Focus, InstallState, LaunchState, VersionFilter};
 use crate::event::{Hit, InstallKind, Tab};
+use crate::news::Block as ArticleBlock;
 use crate::theme;
 use ratatui::{
     buffer::Buffer,
@@ -145,6 +146,10 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     wipe(f, area);
+    if app.viewing_news.is_some() {
+        draw_article(f, app, area);
+        return;
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -907,7 +912,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let dot = Span::styled("● ", Style::default().fg(theme::ACCENT).bg(theme::BG));
     let sp = Span::styled("   ", theme::base());
 
-    let left = Line::from(vec![
+    let line = Line::from(vec![
         dot.clone(),
         Span::styled(acct, theme::dim()),
         sp.clone(),
@@ -917,23 +922,195 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         dot,
         Span::styled(app.status_message.clone(), theme::dim()),
     ]);
+    f.render_widget(Paragraph::new(line).style(theme::base()), area);
+}
 
-    let cols = Layout::default()
+fn draw_article(f: &mut Frame, app: &mut App, area: Rect) {
+    let (title, date, kind, source_url) = match &app.article {
+        Some(a) => (
+            a.title.clone(),
+            a.date.get(..10).unwrap_or(&a.date).to_string(),
+            a.kind.clone(),
+            a.source_url.clone(),
+        ),
+        None => (
+            app.viewing_news
+                .and_then(|i| app.news.get(i).map(|e| e.title.clone()))
+                .unwrap_or_default(),
+            String::new(),
+            String::new(),
+            "https://www.minecraft.net/en-us/articles".into(),
+        ),
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::BORDER))
+        .style(theme::base())
+        .title(Span::styled(
+            format!(" 🌐  {source_url} "),
+            Style::default()
+                .fg(theme::ACCENT)
+                .bg(theme::BG)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(area).inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    f.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // close button row
+            Constraint::Length(1), // gap
+            Constraint::Length(2), // title (1 line) + spacer
+            Constraint::Length(1), // metadata
+            Constraint::Length(1), // separator
+            Constraint::Min(0),    // body
+        ])
+        .split(inner);
+
+    // Close button on the right
+    let close_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(22)])
-        .split(area);
-    f.render_widget(Paragraph::new(left).style(theme::base()), cols[0]);
-
-    let right = Line::from(vec![
-        Span::styled("📦 ", Style::default().fg(theme::ACCENT).bg(theme::BG)),
-        Span::styled("Enjoy your game!", theme::dim()),
-    ]);
+        .constraints([Constraint::Min(0), Constraint::Length(8)])
+        .split(rows[0]);
+    let close_rect = close_cols[1];
+    let hovered = app.hover == Some(Hit::CloseArticle);
+    let close_style = if hovered {
+        Style::default()
+            .fg(theme::ACCENT_HI)
+            .bg(theme::BG)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme::FG_DIM).bg(theme::BG)
+    };
     f.render_widget(
-        Paragraph::new(right)
-            .style(theme::base())
+        Paragraph::new("× Close")
+            .style(close_style)
             .alignment(Alignment::Right),
-        cols[1],
+        close_rect,
     );
+    app.click_regions.push((close_rect, Hit::CloseArticle));
+
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            title,
+            Style::default()
+                .fg(theme::ACCENT_HI)
+                .bg(theme::BG)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(theme::base()),
+        rows[2],
+    );
+
+    let meta = if date.is_empty() && kind.is_empty() {
+        String::new()
+    } else if kind.is_empty() {
+        date
+    } else {
+        format!("{date}  ·  {kind}")
+    };
+    f.render_widget(
+        Paragraph::new(Span::styled(meta, theme::dim())).style(theme::base()),
+        rows[3],
+    );
+
+    let sep: String = "─".repeat(rows[4].width as usize);
+    f.render_widget(
+        Paragraph::new(sep).style(Style::default().fg(theme::BORDER).bg(theme::BG)),
+        rows[4],
+    );
+
+    let body_area = rows[5];
+    if app.article_loading {
+        f.render_widget(
+            Paragraph::new("Loading...").style(theme::dim()),
+            body_area,
+        );
+        return;
+    }
+    let Some(article) = &app.article else {
+        f.render_widget(
+            Paragraph::new("(no content)").style(theme::dim()),
+            body_area,
+        );
+        return;
+    };
+
+    let body_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(body_area);
+    let content_area = body_cols[0];
+    let sb_area = body_cols[1];
+
+    let lines = article_to_lines(article);
+    let total_lines = lines.len();
+    let visible = content_area.height as usize;
+    let max_offset = total_lines.saturating_sub(visible) as u16;
+    if app.article_offset > max_offset {
+        app.article_offset = max_offset;
+    }
+    let para = Paragraph::new(lines)
+        .style(theme::base())
+        .wrap(Wrap { trim: false })
+        .scroll((app.article_offset, 0));
+    f.render_widget(para, content_area);
+
+    if total_lines > visible {
+        let mut sb_state = ScrollbarState::new(max_offset as usize)
+            .position(app.article_offset as usize)
+            .viewport_content_length(visible);
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(Style::default().fg(theme::BORDER).bg(theme::BG))
+            .thumb_style(Style::default().fg(theme::ACCENT).bg(theme::BG))
+            .begin_symbol(None)
+            .end_symbol(None);
+        f.render_stateful_widget(sb, sb_area, &mut sb_state);
+    }
+}
+
+fn article_to_lines(article: &crate::news::Article) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for block in &article.blocks {
+        match block {
+            ArticleBlock::Heading(level, text) => {
+                lines.push(Line::from(""));
+                let style = if *level <= 2 {
+                    Style::default()
+                        .fg(theme::ACCENT_HI)
+                        .bg(theme::BG)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                } else {
+                    Style::default()
+                        .fg(theme::ACCENT)
+                        .bg(theme::BG)
+                        .add_modifier(Modifier::BOLD)
+                };
+                lines.push(Line::from(Span::styled(text.clone(), style)));
+                lines.push(Line::from(""));
+            }
+            ArticleBlock::Paragraph(text) => {
+                lines.push(Line::from(Span::styled(
+                    text.clone(),
+                    Style::default().fg(theme::FG).bg(theme::BG),
+                )));
+                lines.push(Line::from(""));
+            }
+            ArticleBlock::Bullet(text) => {
+                lines.push(Line::from(vec![
+                    Span::styled("  • ", Style::default().fg(theme::ACCENT).bg(theme::BG)),
+                    Span::styled(text.clone(), Style::default().fg(theme::FG).bg(theme::BG)),
+                ]));
+            }
+        }
+    }
+    lines
 }
 
 pub fn hit_test(app: &App, col: u16, row: u16) -> Option<Hit> {

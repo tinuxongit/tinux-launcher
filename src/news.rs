@@ -2,29 +2,22 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 const NEWS_URL: &str = "https://launchercontent.mojang.com/v2/javaPatchNotes.json";
+const CONTENT_BASE: &str = "https://launchercontent.mojang.com/v2/";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct NewsEntry {
     pub title: String,
     #[serde(default)]
-    pub version: String,
-    #[serde(default)]
     pub date: String,
     #[serde(default, rename = "type")]
     pub kind: String,
+    #[serde(default, rename = "contentPath")]
+    pub content_path: String,
 }
 
 impl NewsEntry {
     pub fn date_short(&self) -> &str {
         self.date.get(..10).unwrap_or(&self.date)
-    }
-
-    pub fn link(&self) -> String {
-        if self.version.is_empty() {
-            "https://www.minecraft.net/en-us/articles".into()
-        } else {
-            format!("https://minecraft.wiki/w/Java_Edition_{}", self.version)
-        }
     }
 }
 
@@ -43,4 +36,231 @@ pub async fn fetch(client: &reqwest::Client) -> Result<Vec<NewsEntry>> {
         .await
         .context("parsing patch notes")?;
     Ok(resp.entries)
+}
+
+#[derive(Debug, Clone)]
+pub struct Article {
+    pub title: String,
+    pub date: String,
+    pub kind: String,
+    pub source_url: String,
+    pub blocks: Vec<Block>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Block {
+    Heading(u8, String),
+    Paragraph(String),
+    Bullet(String),
+}
+
+#[derive(Debug, Deserialize)]
+struct RawArticle {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    date: String,
+    #[serde(default, rename = "type")]
+    kind: String,
+    #[serde(default)]
+    body: String,
+}
+
+pub async fn fetch_article(client: &reqwest::Client, content_path: &str) -> Result<Article> {
+    let path = content_path.trim_start_matches('/');
+    let url = format!("{CONTENT_BASE}{path}");
+    let raw: RawArticle = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await
+        .context("parsing article body")?;
+    Ok(Article {
+        title: raw.title,
+        date: raw.date,
+        kind: raw.kind,
+        source_url: "https://www.minecraft.net/en-us/articles".into(),
+        blocks: parse_html(&raw.body),
+    })
+}
+
+enum Tok {
+    Open(String),
+    Close(String),
+    Text(String),
+}
+
+fn tokenize(html: &str) -> Vec<Tok> {
+    let mut tokens = Vec::new();
+    let mut buf = String::new();
+    let mut chars = html.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '<' {
+            if !buf.is_empty() {
+                tokens.push(Tok::Text(decode_entities(&buf)));
+                buf.clear();
+            }
+            let mut tag = String::new();
+            for c2 in chars.by_ref() {
+                if c2 == '>' {
+                    break;
+                }
+                tag.push(c2);
+            }
+            let trimmed = tag.trim();
+            if let Some(rest) = trimmed.strip_prefix('/') {
+                let name = rest.split_whitespace().next().unwrap_or("").to_lowercase();
+                tokens.push(Tok::Close(name));
+            } else {
+                let bare = trimmed.trim_end_matches('/').trim();
+                let name = bare.split_whitespace().next().unwrap_or("").to_lowercase();
+                tokens.push(Tok::Open(name));
+            }
+        } else {
+            buf.push(c);
+        }
+    }
+    if !buf.is_empty() {
+        tokens.push(Tok::Text(decode_entities(&buf)));
+    }
+    tokens
+}
+
+fn decode_entities(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '&' {
+            out.push(c);
+            continue;
+        }
+        let mut entity = String::new();
+        let mut closed = false;
+        for c2 in chars.by_ref() {
+            if c2 == ';' {
+                closed = true;
+                break;
+            }
+            if entity.len() > 12 || c2.is_whitespace() {
+                out.push('&');
+                out.push_str(&entity);
+                out.push(c2);
+                break;
+            }
+            entity.push(c2);
+        }
+        if !closed {
+            continue;
+        }
+        let replacement = match entity.as_str() {
+            "amp" => "&",
+            "lt" => "<",
+            "gt" => ">",
+            "quot" => "\"",
+            "apos" | "#39" => "'",
+            "nbsp" => " ",
+            "rsquo" | "lsquo" => "'",
+            "rdquo" | "ldquo" => "\"",
+            "mdash" => "—",
+            "ndash" => "–",
+            "hellip" => "…",
+            "trade" => "™",
+            "copy" => "©",
+            "reg" => "®",
+            _ => "",
+        };
+        out.push_str(replacement);
+    }
+    out
+}
+
+fn heading_level(tag: &str) -> Option<u8> {
+    if let Some(rest) = tag.strip_prefix('h') {
+        if let Ok(n) = rest.parse::<u8>() {
+            if (1..=6).contains(&n) {
+                return Some(n);
+            }
+        }
+    }
+    None
+}
+
+fn parse_html(html: &str) -> Vec<Block> {
+    let tokens = tokenize(html);
+    let mut blocks = Vec::new();
+    let mut buf = String::new();
+    let mut kind = BlockState::Paragraph;
+
+    let flush = |kind: &BlockState, buf: &mut String, blocks: &mut Vec<Block>| {
+        let collapsed = collapse_ws(buf);
+        if collapsed.is_empty() {
+            buf.clear();
+            return;
+        }
+        match kind {
+            BlockState::Paragraph => blocks.push(Block::Paragraph(collapsed)),
+            BlockState::Heading(n) => blocks.push(Block::Heading(*n, collapsed)),
+            BlockState::Bullet => blocks.push(Block::Bullet(collapsed)),
+        }
+        buf.clear();
+    };
+
+    for tok in tokens {
+        match tok {
+            Tok::Open(name) => {
+                if name == "p" {
+                    flush(&kind, &mut buf, &mut blocks);
+                    kind = BlockState::Paragraph;
+                } else if let Some(n) = heading_level(&name) {
+                    flush(&kind, &mut buf, &mut blocks);
+                    kind = BlockState::Heading(n);
+                } else if name == "li" {
+                    flush(&kind, &mut buf, &mut blocks);
+                    kind = BlockState::Bullet;
+                } else if name == "br" {
+                    buf.push(' ');
+                }
+            }
+            Tok::Close(name) => {
+                if name == "p"
+                    || name == "li"
+                    || heading_level(&name).is_some()
+                    || name == "ul"
+                    || name == "ol"
+                {
+                    flush(&kind, &mut buf, &mut blocks);
+                    kind = BlockState::Paragraph;
+                }
+            }
+            Tok::Text(t) => buf.push_str(&t),
+        }
+    }
+    flush(&kind, &mut buf, &mut blocks);
+    blocks
+}
+
+#[derive(Debug, Clone, Copy)]
+enum BlockState {
+    Paragraph,
+    Heading(u8),
+    Bullet,
+}
+
+fn collapse_ws(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = true;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    out.trim().to_string()
 }

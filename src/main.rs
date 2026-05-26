@@ -163,6 +163,11 @@ fn handle_key(app: &mut App, k: KeyEvent) {
     }
 
     match k.code {
+        KeyCode::Esc if app.viewing_news.is_some() => {
+            app.viewing_news = None;
+            app.article = None;
+            app.article_loading = false;
+        }
         KeyCode::Esc | KeyCode::Char('q') => app.running = false,
         KeyCode::Char('1') => app.tab = Tab::Play,
         KeyCode::Char('2') => app.tab = Tab::Versions,
@@ -212,18 +217,30 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 dispatch(app, hit, extend);
             }
         }
-        MouseEventKind::ScrollUp => match app.tab {
-            Tab::Versions => app.list_offset = app.list_offset.saturating_sub(3),
-            Tab::Logs => app.log_offset = app.log_offset.saturating_add(3),
-            Tab::Play => app.news_offset = app.news_offset.saturating_sub(2),
-            _ => {}
-        },
-        MouseEventKind::ScrollDown => match app.tab {
-            Tab::Versions => app.list_offset = app.list_offset.saturating_add(3),
-            Tab::Logs => app.log_offset = app.log_offset.saturating_sub(3),
-            Tab::Play => app.news_offset = app.news_offset.saturating_add(2),
-            _ => {}
-        },
+        MouseEventKind::ScrollUp => {
+            if app.viewing_news.is_some() {
+                app.article_offset = app.article_offset.saturating_sub(2);
+            } else {
+                match app.tab {
+                    Tab::Versions => app.list_offset = app.list_offset.saturating_sub(3),
+                    Tab::Logs => app.log_offset = app.log_offset.saturating_add(3),
+                    Tab::Play => app.news_offset = app.news_offset.saturating_sub(2),
+                    _ => {}
+                }
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if app.viewing_news.is_some() {
+                app.article_offset = app.article_offset.saturating_add(2);
+            } else {
+                match app.tab {
+                    Tab::Versions => app.list_offset = app.list_offset.saturating_add(3),
+                    Tab::Logs => app.log_offset = app.log_offset.saturating_sub(3),
+                    Tab::Play => app.news_offset = app.news_offset.saturating_add(2),
+                    _ => {}
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -281,10 +298,22 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         Hit::ModeOnline => app.account_mode = AccountMode::Online,
         Hit::NewsItem(i) => {
             if let Some(entry) = app.news.get(i) {
-                let url = entry.link();
-                let _ = webbrowser::open(&url);
-                app.status_message = format!("Opened: {}", entry.title);
+                let content_path = entry.content_path.clone();
+                let title = entry.title.clone();
+                app.viewing_news = Some(i);
+                app.article = None;
+                app.article_loading = true;
+                app.article_offset = 0;
+                app.status_message = format!("Loading: {title}");
+                let client = app.client.clone();
+                let tx = app.worker_tx.clone();
+                app::spawn_article_fetch(client, tx, i, content_path);
             }
+        }
+        Hit::CloseArticle => {
+            app.viewing_news = None;
+            app.article = None;
+            app.article_loading = false;
         }
     }
 }
