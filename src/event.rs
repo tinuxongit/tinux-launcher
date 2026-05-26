@@ -28,7 +28,9 @@ pub enum Hit {
     ModeOffline,
     ModeOnline,
     NewsItem(usize),
+    NewsScrollbar,
     CloseArticle,
+    ArticleScrollbar,
     OpenArticleExternal,
     OpenAllArticles,
     NewsSplitter,
@@ -41,6 +43,8 @@ pub enum Hit {
     ClearPreviewButton,
     RotateSkinLeft,
     RotateSkinRight,
+    VersionsScrollbar,
+    LogsScrollbar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

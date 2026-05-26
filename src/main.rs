@@ -27,7 +27,7 @@ use crossterm::{
 };
 use event::{Hit, Tab};
 use futures::StreamExt;
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
 use std::io::{self, Stdout};
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -246,9 +246,14 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
             app.hover = ui::hit_test(app, m.column, m.row);
         }
         MouseEventKind::Down(MouseButton::Left) => {
-            if let Some(hit) = ui::hit_test(app, m.column, m.row) {
+            if let Some((rect, hit)) = ui::hit_region(app, m.column, m.row) {
                 if hit == Hit::NewsSplitter {
                     app.dragging_split = true;
+                    return;
+                }
+                if is_scrollbar_hit(hit) {
+                    app.dragging_scrollbar = Some((hit, rect));
+                    scroll_to_mouse(app, hit, rect, m.row);
                     return;
                 }
                 let extend = m.modifiers.contains(KeyModifiers::CONTROL);
@@ -257,6 +262,7 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
         }
         MouseEventKind::Up(MouseButton::Left) => {
             app.dragging_split = false;
+            app.dragging_scrollbar = None;
         }
         MouseEventKind::Drag(MouseButton::Left) if app.dragging_split => {
             let inner = app.play_inner;
@@ -265,6 +271,11 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
                 let min = 7u16;
                 let max = inner.height.saturating_sub(4);
                 app.news_split_top = Some(rel.clamp(min, max));
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if let Some((hit, rect)) = app.dragging_scrollbar {
+                scroll_to_mouse(app, hit, rect, m.row);
             }
         }
         MouseEventKind::ScrollUp => {
@@ -292,6 +303,70 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
             }
         }
         _ => {}
+    }
+}
+
+fn is_scrollbar_hit(hit: Hit) -> bool {
+    matches!(
+        hit,
+        Hit::NewsScrollbar | Hit::ArticleScrollbar | Hit::VersionsScrollbar | Hit::LogsScrollbar
+    )
+}
+
+fn scroll_to_mouse(app: &mut App, hit: Hit, rect: Rect, row: u16) {
+    let Some(pos) = scrollbar_position(rect, row) else {
+        return;
+    };
+    match hit {
+        Hit::NewsScrollbar => {
+            let total = app.news.len();
+            let visible = rect.height as usize;
+            if total > visible {
+                app.news_offset = pos_for_range(pos, total - visible);
+            }
+        }
+        Hit::VersionsScrollbar => {
+            let total = app.visible_versions().len();
+            let visible = rect.height as usize;
+            if total > visible {
+                app.list_offset = pos_for_range(pos, total - visible);
+            }
+        }
+        Hit::LogsScrollbar => {
+            let total = app.logs.len();
+            let visible = rect.height as usize;
+            if total > visible {
+                let max = total - visible;
+                app.log_offset = max.saturating_sub(pos_for_range(pos, max));
+            }
+        }
+        Hit::ArticleScrollbar => {
+            if let Some(article) = &app.article {
+                let total = ui::article_line_count(article);
+                let visible = rect.height as usize;
+                if total > visible {
+                    app.article_offset = pos_for_range(pos, total - visible) as u16;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn scrollbar_position(rect: Rect, row: u16) -> Option<(usize, usize)> {
+    if rect.height == 0 {
+        return None;
+    }
+    let last = rect.height.saturating_sub(1);
+    let rel = row.saturating_sub(rect.y).min(last) as usize;
+    Some((rel, last.max(1) as usize))
+}
+
+fn pos_for_range((rel, denom): (usize, usize), max: usize) -> usize {
+    if max == 0 {
+        0
+    } else {
+        (rel * max + denom / 2) / denom
     }
 }
 
@@ -362,6 +437,7 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
                 app::spawn_article_fetch(client, tx, i, entry);
             }
         }
+        Hit::NewsScrollbar | Hit::ArticleScrollbar | Hit::VersionsScrollbar | Hit::LogsScrollbar => {}
         Hit::CloseArticle => {
             app.viewing_news = None;
             app.article = None;

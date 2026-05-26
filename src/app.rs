@@ -97,6 +97,7 @@ pub struct App {
     pub article_offset: u16,
     pub news_split_top: Option<u16>,
     pub dragging_split: bool,
+    pub dragging_scrollbar: Option<(Hit, Rect)>,
     pub play_inner: Rect,
 
     pub skin_preview: Option<SkinPreview>,
@@ -173,6 +174,7 @@ impl App {
             article_offset: 0,
             news_split_top: None,
             dragging_split: false,
+            dragging_scrollbar: None,
             play_inner: Rect::default(),
             skin_preview: None,
             skin_pending_preview: None,

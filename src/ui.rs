@@ -392,6 +392,7 @@ fn draw_news_list(f: &mut Frame, app: &mut App, area: Rect) {
             .begin_symbol(None)
             .end_symbol(None);
         f.render_stateful_widget(sb, chunks[1], &mut sb_state);
+        app.click_regions.push((chunks[1], Hit::NewsScrollbar));
     }
 }
 
@@ -584,6 +585,7 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
             .begin_symbol(None)
             .end_symbol(None);
         f.render_stateful_widget(sb, sb_rect, &mut sb_state);
+        app.click_regions.push((sb_rect, Hit::VersionsScrollbar));
     }
 }
 
@@ -1150,6 +1152,7 @@ fn draw_logs(f: &mut Frame, app: &mut App, area: Rect) {
             .begin_symbol(None)
             .end_symbol(None);
         f.render_stateful_widget(sb, sb_area, &mut sb_state);
+        app.click_regions.push((sb_area, Hit::LogsScrollbar));
     }
 }
 
@@ -1416,6 +1419,7 @@ fn draw_article(f: &mut Frame, app: &mut App, area: Rect) {
             .begin_symbol(None)
             .end_symbol(None);
         f.render_stateful_widget(sb, sb_area, &mut sb_state);
+        app.click_regions.push((sb_area, Hit::ArticleScrollbar));
     }
 
     if !article.read_more_link.is_empty() {
@@ -1483,14 +1487,22 @@ fn article_to_lines(article: &crate::news::Article) -> Vec<Line<'static>> {
     lines
 }
 
+pub fn article_line_count(article: &crate::news::Article) -> usize {
+    article_to_lines(article).len()
+}
+
 pub fn hit_test(app: &App, col: u16, row: u16) -> Option<Hit> {
+    hit_region(app, col, row).map(|(_, hit)| hit)
+}
+
+pub fn hit_region(app: &App, col: u16, row: u16) -> Option<(Rect, Hit)> {
     for (rect, hit) in app.click_regions.iter().rev() {
         if col >= rect.x
             && col < rect.x + rect.width
             && row >= rect.y
             && row < rect.y + rect.height
         {
-            return Some(*hit);
+            return Some((*rect, *hit));
         }
     }
     None
