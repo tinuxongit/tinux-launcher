@@ -1,44 +1,58 @@
-# Revo Launcher
+# Tinux Launcher
 
-A fast, clickable terminal Minecraft launcher written in Rust.
+A fast, clickable terminal Minecraft Java Edition launcher written in Rust.
 
 - Click tabs, version rows, and buttons with your mouse — works in any modern terminal (Windows Terminal, iTerm2, Alacritty, Kitty, WezTerm).
-- Streams parallel asset/library downloads (16 in flight), SHA-1 verified.
+- Parallel asset / library downloads (16 in flight), SHA-1 verified, streamed to disk.
 - Microsoft OAuth via your default browser → Xbox Live → XSTS → Minecraft Services. Refresh token cached in the OS keyring.
-- Offline mode for testing single-player without an account.
+- Offline mode for single-player without an account.
+- In-app log copy: click a line, Ctrl+click to extend, Ctrl+C to clipboard.
 - Tiny release binary (~5 MB after LTO + strip).
 
-## Build & run
+## Install & run
 
-```powershell
+You need a Rust toolchain (1.80+) and a Java 17+ JDK on `PATH` for modern Minecraft versions (Java 8 still works for ≤ 1.16).
+
+```bash
+git clone https://github.com/citropy/tinux-launcher
+cd tinux-launcher
 cargo run --release
 ```
 
-Keys: `1`–`4` switch tabs, `Tab` cycles them, `q`/`Esc` quits, `Enter` launches the selected version. On the Play tab, type to edit the offline username, `Backspace` to delete. Arrows / PageUp / PageDown / mouse wheel scroll lists and logs.
+## Keys & mouse
+
+| Action | Key / Mouse |
+|---|---|
+| Switch tab | `1`–`4`, `Tab`, or click the tab |
+| Launch selected version | `Enter` (on Play tab) or click `▶ Launch` |
+| Edit offline username | Click the field, type, `Esc` / click away to unfocus |
+| Scroll lists / logs | `↑`/`↓`, `PageUp`/`PageDown`, or mouse wheel |
+| Select a log line | Click it |
+| Extend log selection | `Ctrl`+click another line |
+| Select every log line | `Ctrl+A` (on Logs tab) |
+| Copy selection to clipboard | `Ctrl+C` |
+| Paste into offline-name field | `Ctrl+V` (while field is focused) |
+| Force a full repaint | `Ctrl+L` |
+| Quit | `Esc` or `q` |
 
 ## Microsoft sign-in
 
-Microsoft requires every Minecraft launcher to bring its own Azure app registration. Free, one-time setup:
+Click the **Sign in (MS)** button on the Accounts tab. Your default browser opens to the Microsoft login page; sign in with the account that owns your Minecraft Java Edition. After you confirm the consent screen the browser shows "Sign-in complete" and the launcher's status bar says "Signed in as ⟨username⟩".
 
-1. Go to <https://portal.azure.com> → **App registrations** → **New registration**.
-2. Name it anything (e.g. `revo-launcher-local`).
-3. Supported account types: **Personal Microsoft accounts only**.
-4. Redirect URI: **Public client/native (mobile & desktop)** → `http://localhost/callback` (the port is chosen at runtime; only the path matters for matching).
-5. Copy the **Application (client) ID** from the overview page.
-6. Set the env var before launching:
+Tinux ships with a baked-in Azure App ID (`164bca05-…`) so end users never have to register anything — sign-in works out of the box, exactly like the official launcher. Until the app is approved by Mojang, you'll see a 403 with a clear hint after consent; **offline mode still works** in the meantime.
 
-```powershell
-$env:REVO_MS_CLIENT_ID = "<your-client-id>"
-cargo run --release
-```
+If you want to use your own Azure app instead (e.g. you're forking and shipping your own build), you have three ways to override the baked id, highest precedence first:
 
-Without that var, you can still use **offline mode** — single-player only.
+1. **Env var** — `REVO_MS_CLIENT_ID=<guid>` (one-off, e.g. for CI tests).
+2. **Config file** — paste the GUID into `ms_client_id` in `config.json` (see "Data layout" for the path). Persists between runs without editing source.
+3. **Source** — replace the `BAKED_CLIENT_ID` constant in `src/auth.rs` and rebuild.
 
 ## Data layout
 
-Saved under the OS data dir (`%APPDATA%\revo\RevoLauncher` on Windows):
+Saved under the OS data dir (`%APPDATA%\revo\RevoLauncher` on Windows; equivalent paths on macOS / Linux):
 
 ```
+config.json                # optional: { "ms_client_id": "<guid>" }
 versions/<id>/<id>.json    # cached version manifest
 versions/<id>/<id>.jar     # cached client jar
 libraries/...              # Maven-shaped library cache
@@ -60,11 +74,16 @@ logs/revo.log              # tracing log file
 | `manifest.rs` | Mojang `version_manifest_v2.json` |
 | `version.rs` | Per-version JSON + rule engine for libraries/args |
 | `auth.rs` | MS OAuth → XBL → XSTS → MC token chain (PKCE S256) |
+| `config.rs` | `config.json` loader, stub creation, default-app open helper |
 | `download.rs` | Parallel SHA-1-verified streaming downloader (16 conc.) |
-| `launch.rs` | Builds JVM command, spawns Java, streams stdout/stderr |
-| `java.rs` | Locates Java on PATH / `$JAVA_HOME`, parses `-version` |
+| `launch.rs` | Builds JVM command, spawns `javaw.exe`, streams stdout/stderr |
+| `java.rs` | Locates Java on `PATH` / `$JAVA_HOME`, parses `-version` |
 | `paths.rs` | Cross-platform data/cache dir resolution |
 | `theme.rs` | Color palette and named styles |
 | `worker.rs` | Tokio tasks for install/launch with progress reporting |
 
-Java 17+ is required for Minecraft 1.17+; older versions need Java 8. The launcher checks `javaVersion.majorVersion` from the version JSON before launch and refuses to start if the detected JDK is too old.
+Java 17+ is required for Minecraft 1.17+; older versions need Java 8. The launcher reads `javaVersion.majorVersion` from each version's JSON and refuses to launch if the detected JDK is too old.
+
+## License
+
+MIT.
