@@ -7,7 +7,7 @@ use tokio::net::TcpListener;
 use url::Url;
 
 const BIND_HOST: &str = "127.0.0.1";
-const REDIRECT_HOST: &str = "localhost";
+const REDIRECT_HOST: &str = BIND_HOST;
 const AUTH_BASE: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
 const XBOX_AUTH: &str = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_AUTH: &str = "https://xsts.auth.xboxlive.com/xsts/authorize";
@@ -232,7 +232,7 @@ async fn wait_for_redirect(listener: TcpListener, expected_state: &str) -> Resul
     let req = String::from_utf8_lossy(&buf[..n]);
     let first_line = req.lines().next().unwrap_or("");
     let path = first_line.split_whitespace().nth(1).unwrap_or("/");
-    let full = format!("http://localhost{path}");
+    let full = format!("http://{REDIRECT_HOST}{path}");
     let parsed = Url::parse(&full)?;
     let pairs: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
 
