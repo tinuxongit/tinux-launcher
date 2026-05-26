@@ -25,7 +25,6 @@ pub enum Hit {
     LogRow(usize),
     CopyLineButton,
     CopyAllButton,
-    OpenConfigButton,
     ModeOffline,
     ModeOnline,
     NewsItem(usize),

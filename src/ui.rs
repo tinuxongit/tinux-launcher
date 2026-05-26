@@ -671,23 +671,17 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
         let btn_row_rect = Rect::new(inner.x, y, inner.width, BUTTON_H);
         let cols = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(18),
-                Constraint::Length(2),
-                Constraint::Length(18),
-                Constraint::Min(0),
-            ])
+            .constraints([Constraint::Length(18), Constraint::Min(0)])
             .split(btn_row_rect);
         if app.account.is_some() {
             draw_button(f, app, cols[0], "Sign out", Hit::LogoutButton, false);
         } else {
             draw_button(f, app, cols[0], "Sign in (MS)", Hit::LoginButton, true);
         }
-        draw_button(f, app, cols[2], "Open config", Hit::OpenConfigButton, false);
         y += BUTTON_H + 1;
 
         if app.account.is_some() {
-            draw_skin_section(f, app, inner, y);
+            draw_skin_section(f, app, inner, y, true);
         }
     } else {
         let label_row = row(y);
@@ -708,15 +702,7 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             .split(field_row);
         draw_offline_name(f, app, cols[0]);
         y += BUTTON_H + 1;
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "Note: vanilla Minecraft uses default Steve/Alex skins in offline mode.",
-                theme::dim(),
-            )))
-            .style(theme::base())
-            .wrap(Wrap { trim: true }),
-            Rect::new(inner.x, y, inner.width, 2),
-        );
+        draw_skin_section(f, app, inner, y, false);
     }
 
     if let Some(prev_area) = preview_area {
@@ -724,7 +710,7 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn draw_skin_section(f: &mut Frame, app: &mut App, inner: Rect, mut y: u16) {
+fn draw_skin_section(f: &mut Frame, app: &mut App, inner: Rect, mut y: u16, online: bool) {
     let bottom = inner.y + inner.height;
     if y + 1 >= bottom {
         return;
@@ -749,21 +735,23 @@ fn draw_skin_section(f: &mut Frame, app: &mut App, inner: Rect, mut y: u16) {
         return;
     }
 
-    let label_rect = Rect::new(inner.x, y, 7, BUTTON_H);
-    draw_vcentered_label(f, "Model:", label_rect, theme::dim());
-    let seg_rect = Rect::new(inner.x + 8, y, 34, BUTTON_H);
-    draw_segmented(
-        f,
-        app,
-        seg_rect,
-        &[
-            ("Classic", Hit::SkinModelClassic, app.skin_model == SkinModel::Classic),
-            ("Slim", Hit::SkinModelSlim, app.skin_model == SkinModel::Slim),
-        ],
-    );
-    y += BUTTON_H + 1;
-    if y + BUTTON_H >= bottom {
-        return;
+    if online {
+        let label_rect = Rect::new(inner.x, y, 7, BUTTON_H);
+        draw_vcentered_label(f, "Model:", label_rect, theme::dim());
+        let seg_rect = Rect::new(inner.x + 8, y, 34, BUTTON_H);
+        draw_segmented(
+            f,
+            app,
+            seg_rect,
+            &[
+                ("Classic", Hit::SkinModelClassic, app.skin_model == SkinModel::Classic),
+                ("Slim", Hit::SkinModelSlim, app.skin_model == SkinModel::Slim),
+            ],
+        );
+        y += BUTTON_H + 1;
+        if y + BUTTON_H >= bottom {
+            return;
+        }
     }
 
     let label_rect = Rect::new(inner.x, y, 7, BUTTON_H);
@@ -777,17 +765,29 @@ fn draw_skin_section(f: &mut Frame, app: &mut App, inner: Rect, mut y: u16) {
     }
 
     let btn_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
+    let apply_label = if online { "Apply skin" } else { "Save skin" };
+    let constraints: Vec<Constraint> = if online {
+        vec![
             Constraint::Length(13),
             Constraint::Length(2),
             Constraint::Length(13),
             Constraint::Length(2),
             Constraint::Length(20),
             Constraint::Min(0),
-        ])
+        ]
+    } else {
+        vec![
+            Constraint::Length(13),
+            Constraint::Length(2),
+            Constraint::Length(13),
+            Constraint::Min(0),
+        ]
+    };
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
         .split(btn_row);
+
     if app.skin_pending_loading {
         draw_disabled_button(f, cols[0], "Loading...");
     } else {
@@ -796,9 +796,24 @@ fn draw_skin_section(f: &mut Frame, app: &mut App, inner: Rect, mut y: u16) {
     if app.skin_busy {
         draw_disabled_button(f, cols[2], "Working...");
     } else {
-        draw_button(f, app, cols[2], "Apply skin", Hit::ApplySkinButton, true);
+        draw_button(f, app, cols[2], apply_label, Hit::ApplySkinButton, true);
     }
-    draw_button(f, app, cols[4], "Reset to default", Hit::ResetSkinButton, false);
+    if online {
+        draw_button(f, app, cols[4], "Reset to default", Hit::ResetSkinButton, false);
+    }
+    y += BUTTON_H + 1;
+
+    if !online && y + 1 < bottom {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Saved URL is used by skin-loader mods (CustomSkinLoader, OfflineSkins) — vanilla Minecraft can't render custom skins offline by itself.",
+                theme::dim(),
+            )))
+            .style(theme::base())
+            .wrap(Wrap { trim: true }),
+            Rect::new(inner.x, y, inner.width, bottom.saturating_sub(y).min(3)),
+        );
+    }
 }
 
 fn draw_skin_url(f: &mut Frame, app: &mut App, rect: Rect) {

@@ -7,6 +7,8 @@ pub struct Config {
     pub ms_client_id: Option<String>,
     #[serde(default)]
     pub offline_name: Option<String>,
+    #[serde(default)]
+    pub offline_skin_url: Option<String>,
 }
 
 impl Config {
@@ -24,9 +26,17 @@ pub fn path() -> Option<PathBuf> {
 }
 
 pub fn save_offline_name(name: &str) {
+    update(|c| c.offline_name = Some(name.to_string()));
+}
+
+pub fn save_offline_skin_url(url: &str) {
+    update(|c| c.offline_skin_url = Some(url.to_string()));
+}
+
+fn update(f: impl FnOnce(&mut Config)) {
     let Some(p) = path() else { return };
     let mut cfg = Config::load(&p);
-    cfg.offline_name = Some(name.to_string());
+    f(&mut cfg);
     if let Some(parent) = p.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -47,20 +57,3 @@ pub fn ensure_stub() {
     let _ = std::fs::write(&p, serde_json::to_vec_pretty(&stub).unwrap_or_default());
 }
 
-#[cfg(windows)]
-pub fn open_with_default_app(p: &Path) -> std::io::Result<()> {
-    std::process::Command::new("cmd")
-        .args(["/c", "start", "", &p.to_string_lossy()])
-        .spawn()
-        .map(|_| ())
-}
-
-#[cfg(target_os = "macos")]
-pub fn open_with_default_app(p: &Path) -> std::io::Result<()> {
-    std::process::Command::new("open").arg(p).spawn().map(|_| ())
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-pub fn open_with_default_app(p: &Path) -> std::io::Result<()> {
-    std::process::Command::new("xdg-open").arg(p).spawn().map(|_| ())
-}

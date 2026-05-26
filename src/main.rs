@@ -337,7 +337,6 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         }
         Hit::CopyLineButton => copy_selected_log(app),
         Hit::CopyAllButton => copy_all_logs(app),
-        Hit::OpenConfigButton => open_config(app),
         Hit::ModeOffline => app.account_mode = AccountMode::Offline,
         Hit::ModeOnline => app.account_mode = AccountMode::Online,
         Hit::NewsItem(i) => {
@@ -516,10 +515,6 @@ fn trigger_preview_skin(app: &mut App) {
 }
 
 fn trigger_apply_skin(app: &mut App) {
-    let Some(acct) = app.account.clone() else {
-        app.status_message = "Sign in first to change your skin".into();
-        return;
-    };
     let url = app.skin_url_input.trim().to_string();
     if url.is_empty() {
         app.status_message = "Paste a skin URL first".into();
@@ -528,6 +523,19 @@ fn trigger_apply_skin(app: &mut App) {
     if app.skin_busy {
         return;
     }
+
+    // Offline path: just persist the URL. Rendering needs a third-party mod.
+    if app.account_mode == AccountMode::Offline || app.account.is_none() {
+        config::save_offline_skin_url(&url);
+        app.status_message =
+            "Saved skin URL for offline use. Install CustomSkinLoader or similar to see it in-game.".into();
+        return;
+    }
+
+    let Some(acct) = app.account.clone() else {
+        app.status_message = "Sign in first to upload to Mojang".into();
+        return;
+    };
     app.skin_busy = true;
     app.skin_error = None;
     app.status_message = "Applying skin...".into();
@@ -574,17 +582,6 @@ fn trigger_reset_skin(app: &mut App) {
             }
         }
     });
-}
-
-fn open_config(app: &mut App) {
-    let Some(p) = config::path() else {
-        app.status_message = "Could not resolve config path".into();
-        return;
-    };
-    match config::open_with_default_app(&p) {
-        Ok(()) => app.status_message = format!("Opened {}", p.display()),
-        Err(e) => app.status_message = format!("Could not open config: {e}"),
-    }
 }
 
 fn paste_offline_name(app: &mut App) {

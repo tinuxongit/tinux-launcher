@@ -134,10 +134,15 @@ impl App {
             Some(j) => format!("Java {} detected at {}", j.major, j.path.display()),
             None => "Java not found on PATH".into(),
         };
-        let saved_offline = crate::config::path()
-            .and_then(|p| crate::config::Config::load(&p).offline_name)
+        let cfg_opt = crate::config::path().map(|p| crate::config::Config::load(&p));
+        let saved_offline = cfg_opt
+            .as_ref()
+            .and_then(|c| c.offline_name.clone())
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "Steve".to_string());
+        let saved_skin_url = cfg_opt
+            .and_then(|c| c.offline_skin_url)
+            .unwrap_or_default();
         Self {
             running: true,
             tab: Tab::Play,
@@ -171,7 +176,7 @@ impl App {
             skin_preview: None,
             skin_pending_preview: None,
             skin_pending_loading: false,
-            skin_url_input: String::new(),
+            skin_url_input: saved_skin_url,
             skin_model: SkinModel::Classic,
             skin_busy: false,
             skin_error: None,
