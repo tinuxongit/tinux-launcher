@@ -489,9 +489,9 @@ fn copy_selected_log(app: &mut App) {
 }
 
 fn trigger_preview_skin(app: &mut App) {
-    let url = app.skin_url_input.trim().to_string();
-    if url.is_empty() {
-        app.status_message = "Paste a skin URL first".into();
+    let input = app.skin_url_input.trim().to_string();
+    if input.is_empty() {
+        app.status_message = "Paste a skin URL or a Minecraft username first".into();
         return;
     }
     if app.skin_pending_loading {
@@ -503,6 +503,13 @@ fn trigger_preview_skin(app: &mut App) {
     let client = app.client.clone();
     let tx = app.worker_tx.clone();
     tokio::spawn(async move {
+        let url = match skin::resolve_skin_url(&client, &input).await {
+            Ok(u) => u,
+            Err(e) => {
+                let _ = tx.send(event::WorkerMsg::SkinPendingFailed(format!("{e:#}")));
+                return;
+            }
+        };
         match skin::fetch_preview(&client, &url).await {
             Ok(p) => {
                 let _ = tx.send(event::WorkerMsg::SkinPendingLoaded(p));
@@ -515,36 +522,47 @@ fn trigger_preview_skin(app: &mut App) {
 }
 
 fn trigger_apply_skin(app: &mut App) {
-    let url = app.skin_url_input.trim().to_string();
-    if url.is_empty() {
-        app.status_message = "Paste a skin URL first".into();
+    let input = app.skin_url_input.trim().to_string();
+    if input.is_empty() {
+        app.status_message = "Paste a skin URL or a Minecraft username first".into();
         return;
     }
     if app.skin_busy {
         return;
     }
-
-    // Offline path: just persist the URL. Rendering needs a third-party mod.
-    if app.account_mode == AccountMode::Offline || app.account.is_none() {
-        config::save_offline_skin_url(&url);
-        app.status_message =
-            "Saved skin URL for offline use. Install CustomSkinLoader or similar to see it in-game.".into();
-        return;
-    }
-
-    let Some(acct) = app.account.clone() else {
-        app.status_message = "Sign in first to upload to Mojang".into();
-        return;
-    };
     app.skin_busy = true;
     app.skin_error = None;
-    app.status_message = "Applying skin...".into();
+    app.status_message = "Resolving skin...".into();
+
     let client = app.client.clone();
-    let token = acct.access_token;
-    let uuid = acct.uuid;
-    let model = app.skin_model.as_str().to_string();
     let tx = app.worker_tx.clone();
+    let offline = app.account_mode == AccountMode::Offline || app.account.is_none();
+    let token = app.account.as_ref().map(|a| a.access_token.clone());
+    let uuid = app.account.as_ref().map(|a| a.uuid.clone());
+    let model = app.skin_model.as_str().to_string();
+
     tokio::spawn(async move {
+        let url = match skin::resolve_skin_url(&client, &input).await {
+            Ok(u) => u,
+            Err(e) => {
+                let _ = tx.send(event::WorkerMsg::SkinFailed(format!("{e:#}")));
+                return;
+            }
+        };
+
+        if offline {
+            crate::config::save_offline_skin_url(&url);
+            let _ = tx.send(event::WorkerMsg::SkinApplied);
+            return;
+        }
+
+        let (token, uuid) = match (token, uuid) {
+            (Some(t), Some(u)) => (t, u),
+            _ => {
+                let _ = tx.send(event::WorkerMsg::SkinFailed("Sign in first".into()));
+                return;
+            }
+        };
         match auth::set_skin_url(&client, &token, &model, &url).await {
             Ok(()) => {
                 let _ = tx.send(event::WorkerMsg::SkinApplied);

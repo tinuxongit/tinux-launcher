@@ -754,10 +754,10 @@ fn draw_skin_section(f: &mut Frame, app: &mut App, inner: Rect, mut y: u16, onli
         }
     }
 
-    let label_rect = Rect::new(inner.x, y, 7, BUTTON_H);
-    draw_vcentered_label(f, "URL:", label_rect, theme::dim());
-    let url_w = inner.width.saturating_sub(8).min(44);
-    let url_rect = Rect::new(inner.x + 8, y, url_w, BUTTON_H);
+    let label_rect = Rect::new(inner.x, y, 11, BUTTON_H);
+    draw_vcentered_label(f, "URL / user:", label_rect, theme::dim());
+    let url_w = inner.width.saturating_sub(12).min(54);
+    let url_rect = Rect::new(inner.x + 12, y, url_w, BUTTON_H);
     draw_skin_url(f, app, url_rect);
     y += BUTTON_H + 1;
     if y + BUTTON_H >= bottom {
@@ -837,7 +837,7 @@ fn draw_skin_url(f: &mut Frame, app: &mut App, rect: Rect) {
     let content = if focused {
         format!("{}▎", app.skin_url_input)
     } else if app.skin_url_input.is_empty() {
-        "(paste a skin URL, e.g. https://i.imgur.com/...png)".to_string()
+        "(paste a skin URL or a Minecraft username like Notch)".to_string()
     } else {
         app.skin_url_input.clone()
     };

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ratatui::{
     buffer::Buffer,
@@ -93,6 +93,38 @@ pub async fn fetch_preview(client: &reqwest::Client, url: &str) -> Result<SkinPr
         .bytes()
         .await?;
     decode_and_compose(&bytes)
+}
+
+#[derive(Debug, Deserialize)]
+struct UuidLookup {
+    id: String,
+}
+
+/// Resolve a launcher-skin input string to a concrete texture URL.
+/// Inputs starting with `http://`/`https://` are returned as-is. Anything else is
+/// treated as a Minecraft username and looked up via Mojang's public APIs.
+pub async fn resolve_skin_url(client: &reqwest::Client, input: &str) -> Result<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        bail!("empty input");
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return Ok(trimmed.to_string());
+    }
+    if !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || trimmed.len() > 16 {
+        bail!("not a URL and not a valid Minecraft username");
+    }
+    let url = format!("https://api.mojang.com/users/profiles/minecraft/{trimmed}");
+    let resp = client.get(&url).send().await?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        bail!("Minecraft user '{trimmed}' not found");
+    }
+    if !status.is_success() {
+        bail!("username lookup HTTP {status}");
+    }
+    let lookup: UuidLookup = resp.json().await.context("username lookup body")?;
+    current_skin_url(client, &lookup.id).await
 }
 
 fn decode_and_compose(bytes: &[u8]) -> Result<SkinPreview> {
