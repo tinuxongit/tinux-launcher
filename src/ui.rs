@@ -1073,6 +1073,32 @@ fn draw_article(f: &mut Frame, app: &mut App, area: Rect) {
             .end_symbol(None);
         f.render_stateful_widget(sb, sb_area, &mut sb_state);
     }
+
+    if !article.read_more_link.is_empty() {
+        let bottom_y = inner.y + inner.height.saturating_sub(1);
+        let link_rect = Rect::new(inner.x, bottom_y, inner.width, 1);
+        let hovered = app.hover == Some(Hit::OpenArticleExternal);
+        let style = if hovered {
+            Style::default()
+                .fg(theme::ACCENT_HI)
+                .bg(theme::BG)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::default()
+                .fg(theme::ACCENT)
+                .bg(theme::BG)
+                .add_modifier(Modifier::UNDERLINED)
+        };
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                "↗ Read full article on minecraft.net",
+                style,
+            ))
+            .style(theme::base()),
+            link_rect,
+        );
+        app.click_regions.push((link_rect, Hit::OpenArticleExternal));
+    }
 }
 
 fn article_to_lines(article: &crate::news::Article) -> Vec<Line<'static>> {

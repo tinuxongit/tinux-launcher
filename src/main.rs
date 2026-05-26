@@ -297,8 +297,7 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         Hit::ModeOffline => app.account_mode = AccountMode::Offline,
         Hit::ModeOnline => app.account_mode = AccountMode::Online,
         Hit::NewsItem(i) => {
-            if let Some(entry) = app.news.get(i) {
-                let content_path = entry.content_path.clone();
+            if let Some(entry) = app.news.get(i).cloned() {
                 let title = entry.title.clone();
                 app.viewing_news = Some(i);
                 app.article = None;
@@ -307,13 +306,21 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
                 app.status_message = format!("Loading: {title}");
                 let client = app.client.clone();
                 let tx = app.worker_tx.clone();
-                app::spawn_article_fetch(client, tx, i, content_path);
+                app::spawn_article_fetch(client, tx, i, entry);
             }
         }
         Hit::CloseArticle => {
             app.viewing_news = None;
             app.article = None;
             app.article_loading = false;
+        }
+        Hit::OpenArticleExternal => {
+            if let Some(art) = &app.article {
+                if !art.read_more_link.is_empty() {
+                    let _ = webbrowser::open(&art.read_more_link);
+                    app.status_message = "Opened article in browser".into();
+                }
+            }
         }
     }
 }

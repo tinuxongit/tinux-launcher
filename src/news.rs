@@ -1,18 +1,19 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-const NEWS_URL: &str = "https://launchercontent.mojang.com/v2/javaPatchNotes.json";
+const NEWS_URL: &str = "https://launchercontent.mojang.com/v2/news.json";
+const PATCH_URL: &str = "https://launchercontent.mojang.com/v2/javaPatchNotes.json";
 const CONTENT_BASE: &str = "https://launchercontent.mojang.com/v2/";
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct NewsEntry {
     pub title: String,
-    #[serde(default)]
     pub date: String,
-    #[serde(default, rename = "type")]
     pub kind: String,
-    #[serde(default, rename = "contentPath")]
+    pub short_text: String,
+    pub read_more_link: String,
     pub content_path: String,
+    pub article_body: String,
 }
 
 impl NewsEntry {
@@ -22,20 +23,105 @@ impl NewsEntry {
 }
 
 #[derive(Debug, Deserialize)]
-struct NewsResponse {
-    entries: Vec<NewsEntry>,
+struct RawNewsResponse {
+    entries: Vec<RawNewsEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawNewsEntry {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    date: String,
+    #[serde(default)]
+    category: String,
+    #[serde(default)]
+    text: String,
+    #[serde(default, rename = "readMoreLink")]
+    read_more_link: String,
+    #[serde(default, rename = "articleBody")]
+    article_body: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPatchResponse {
+    entries: Vec<RawPatchEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPatchEntry {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    date: String,
+    #[serde(default, rename = "type")]
+    kind: String,
+    #[serde(default, rename = "contentPath")]
+    content_path: String,
 }
 
 pub async fn fetch(client: &reqwest::Client) -> Result<Vec<NewsEntry>> {
-    let resp: NewsResponse = client
+    let (news, patches) = tokio::join!(
+        fetch_news(client),
+        fetch_patches(client),
+    );
+    let mut all: Vec<NewsEntry> = Vec::new();
+    if let Ok(mut n) = news {
+        all.append(&mut n);
+    }
+    if let Ok(mut p) = patches {
+        all.append(&mut p);
+    }
+    all.sort_by(|a, b| b.date.cmp(&a.date));
+    Ok(all)
+}
+
+async fn fetch_news(client: &reqwest::Client) -> Result<Vec<NewsEntry>> {
+    let resp: RawNewsResponse = client
         .get(NEWS_URL)
         .send()
         .await?
         .error_for_status()?
         .json()
         .await
+        .context("parsing news.json")?;
+    Ok(resp
+        .entries
+        .into_iter()
+        .map(|e| NewsEntry {
+            title: e.title,
+            date: e.date,
+            kind: e.category,
+            short_text: e.text,
+            read_more_link: e.read_more_link,
+            content_path: String::new(),
+            article_body: e.article_body,
+        })
+        .collect())
+}
+
+async fn fetch_patches(client: &reqwest::Client) -> Result<Vec<NewsEntry>> {
+    let resp: RawPatchResponse = client
+        .get(PATCH_URL)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await
         .context("parsing patch notes")?;
-    Ok(resp.entries)
+    Ok(resp
+        .entries
+        .into_iter()
+        .map(|e| NewsEntry {
+            title: e.title,
+            date: e.date,
+            kind: e.kind,
+            short_text: String::new(),
+            read_more_link: String::new(),
+            content_path: e.content_path,
+            article_body: String::new(),
+        })
+        .collect())
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +131,7 @@ pub struct Article {
     pub kind: String,
     pub source_url: String,
     pub blocks: Vec<Block>,
+    pub read_more_link: String,
 }
 
 #[derive(Debug, Clone)]
@@ -66,23 +153,55 @@ struct RawArticle {
     body: String,
 }
 
-pub async fn fetch_article(client: &reqwest::Client, content_path: &str) -> Result<Article> {
-    let path = content_path.trim_start_matches('/');
-    let url = format!("{CONTENT_BASE}{path}");
-    let raw: RawArticle = client
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await
-        .context("parsing article body")?;
+pub async fn fetch_article(client: &reqwest::Client, entry: NewsEntry) -> Result<Article> {
+    if !entry.content_path.is_empty() {
+        let path = entry.content_path.trim_start_matches('/');
+        let url = format!("{CONTENT_BASE}{path}");
+        let raw: RawArticle = client
+            .get(&url)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await
+            .context("parsing article body")?;
+        return Ok(Article {
+            title: if !raw.title.is_empty() { raw.title } else { entry.title.clone() },
+            date: if !raw.date.is_empty() { raw.date } else { entry.date.clone() },
+            kind: if !raw.kind.is_empty() { raw.kind } else { entry.kind.clone() },
+            source_url: "https://www.minecraft.net/en-us/articles".into(),
+            blocks: parse_html(&raw.body),
+            read_more_link: String::new(),
+        });
+    }
+
+    if !entry.article_body.is_empty() {
+        return Ok(Article {
+            title: entry.title.clone(),
+            date: entry.date.clone(),
+            kind: entry.kind.clone(),
+            source_url: "https://www.minecraft.net/en-us/articles".into(),
+            blocks: parse_html(&entry.article_body),
+            read_more_link: entry.read_more_link,
+        });
+    }
+
+    let mut blocks = Vec::new();
+    if !entry.short_text.is_empty() {
+        blocks.push(Block::Paragraph(entry.short_text.clone()));
+    }
+    blocks.push(Block::Paragraph(
+        "The full text isn't available inside the launcher. \
+         Use the link below to read it on minecraft.net."
+            .into(),
+    ));
     Ok(Article {
-        title: raw.title,
-        date: raw.date,
-        kind: raw.kind,
+        title: entry.title,
+        date: entry.date,
+        kind: entry.kind,
         source_url: "https://www.minecraft.net/en-us/articles".into(),
-        blocks: parse_html(&raw.body),
+        blocks,
+        read_more_link: entry.read_more_link,
     })
 }
 

@@ -29,6 +29,7 @@ pub enum Hit {
     ModeOnline,
     NewsItem(usize),
     CloseArticle,
+    OpenArticleExternal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

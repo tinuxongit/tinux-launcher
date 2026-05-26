@@ -353,10 +353,10 @@ pub fn spawn_article_fetch(
     client: reqwest::Client,
     tx: UnboundedSender<WorkerMsg>,
     index: usize,
-    content_path: String,
+    entry: NewsEntry,
 ) {
     tokio::spawn(async move {
-        match news::fetch_article(&client, &content_path).await {
+        match news::fetch_article(&client, entry).await {
             Ok(article) => {
                 let _ = tx.send(WorkerMsg::ArticleLoaded { index, article });
             }
