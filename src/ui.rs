@@ -94,7 +94,9 @@ fn update_modal_visible(app: &App) -> bool {
     }
     matches!(
         app.update_status,
-        UpdateStatus::Downloading { .. } | UpdateStatus::Ready { .. }
+        UpdateStatus::Outdated(_)
+            | UpdateStatus::Downloading { .. }
+            | UpdateStatus::Ready { .. }
     )
 }
 
@@ -1979,11 +1981,12 @@ fn draw_update_modal(f: &mut Frame, app: &mut App, area: Rect) {
     });
     f.render_widget(block, rect);
 
-    let (info, downloading, done, total, ready) = match &app.update_status {
+    let (info, downloading, done, total, ready, asset_missing) = match &app.update_status {
         UpdateStatus::Downloading { info, done, total } => {
-            (info.clone(), true, *done, *total, false)
+            (info.clone(), true, *done, *total, false, false)
         }
-        UpdateStatus::Ready { info, .. } => (info.clone(), false, 0, 0, true),
+        UpdateStatus::Ready { info, .. } => (info.clone(), false, 0, 0, true, false),
+        UpdateStatus::Outdated(info) => (info.clone(), false, 0, 0, false, true),
         _ => return,
     };
 
@@ -2050,6 +2053,17 @@ fn draw_update_modal(f: &mut Frame, app: &mut App, area: Rect) {
             Rect::new(inner.x, y, inner.width, 2),
         );
         y += 3;
+    } else if asset_missing {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "No prebuilt binary for this platform on the release yet. Open the release page to grab it manually.",
+                Style::default().fg(theme::GOLD).bg(theme::BG),
+            )))
+            .style(theme::base())
+            .wrap(Wrap { trim: true }),
+            Rect::new(inner.x, y, inner.width, 3),
+        );
+        y += 4;
     }
 
     // Buttons row
@@ -2059,7 +2073,7 @@ fn draw_update_modal(f: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Min(0),
-            Constraint::Length(18),
+            Constraint::Length(20),
             Constraint::Length(2),
             Constraint::Length(12),
         ])
@@ -2067,8 +2081,10 @@ fn draw_update_modal(f: &mut Frame, app: &mut App, area: Rect) {
     let _ = y;
     if ready {
         draw_button(f, app, cols[1], "Install & restart", Hit::InstallUpdateNow, true);
-    } else {
+    } else if downloading {
         draw_disabled_button(f, cols[1], "Downloading...");
+    } else if asset_missing {
+        draw_button(f, app, cols[1], "Open releases page", Hit::OpenReleasesPage, true);
     }
     draw_button(f, app, cols[3], "Later", Hit::DismissUpdate, false);
 }
