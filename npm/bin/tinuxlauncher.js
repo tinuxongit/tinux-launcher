@@ -11,26 +11,22 @@ const bin = path.join(root, "target", "release", exeName);
 const args = process.argv.slice(2);
 
 if (args[0] === "update" || args[0] === "--update") {
-  const manager = findPackageManager();
-  if (!manager) {
-    console.error("Could not find pnpm or npm on PATH.");
-    console.error(`Update manually with: pnpm add -g ${GITHUB_SPEC}`);
-    process.exit(1);
+  if (fs.existsSync(bin)) {
+    try {
+      fs.rmSync(bin, { force: true });
+    } catch (error) {
+      console.error(`Could not remove old binary at ${bin}: ${error.message}`);
+      console.error("If Tinux Launcher is currently running, close it and try again.");
+      process.exit(1);
+    }
   }
-
-  const managerArgs =
-    manager.name === "pnpm"
-      ? ["add", "-g", GITHUB_SPEC]
-      : ["install", "-g", GITHUB_SPEC];
-  const result = spawnSync(manager.bin, managerArgs, {
-    stdio: "inherit",
-    windowsHide: false,
-  });
-  if (result.error) {
-    console.error(`Failed to update with ${manager.name}: ${result.error.message}`);
-    process.exit(1);
+  if (installBinary()) {
+    console.log("Tinux Launcher is up to date.");
+    process.exit(0);
   }
-  process.exit(result.status ?? 0);
+  console.error("Update failed. You can reinstall manually with:");
+  console.error(`  pnpm add -g ${GITHUB_SPEC}`);
+  process.exit(1);
 }
 
 if (args[0] === "--version" || args[0] === "-v") {
@@ -88,18 +84,3 @@ function buildRelease() {
   return true;
 }
 
-function findPackageManager() {
-  for (const manager of [
-    { name: "pnpm", bin: process.platform === "win32" ? "pnpm.cmd" : "pnpm" },
-    { name: "npm", bin: process.platform === "win32" ? "npm.cmd" : "npm" },
-  ]) {
-    const result = spawnSync(manager.bin, ["--version"], {
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    if (!result.error && result.status === 0) {
-      return manager;
-    }
-  }
-  return null;
-}
