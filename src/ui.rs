@@ -22,7 +22,7 @@ use ratatui::{
 const HEADER_HEIGHT: u16 = 4;
 const STATUS_HEIGHT: u16 = 1;
 const BUTTON_H: u16 = 3;
-const SKIN_PREVIEW_BOX_H: u16 = 20;
+const SKIN_PREVIEW_BOX_H: u16 = 23;
 
 struct Fill {
     style: Style,
@@ -540,7 +540,7 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    let title = Line::from(vec![
+    let mut title_spans = vec![
         Span::styled(
             " ⛏  Tinux Launcher",
             Style::default()
@@ -551,8 +551,21 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
             format!("  v{}", env!("CARGO_PKG_VERSION")),
             theme::dim(),
         ),
-    ]);
-    f.render_widget(Paragraph::new(title).style(theme::base()), rows[0]);
+    ];
+    if let Some(ver) = app.selected_version.as_deref() {
+        let body = match app.filter.loader_label() {
+            Some(loader) => format!("{ver} ({loader})"),
+            None => ver.to_string(),
+        };
+        title_spans.push(Span::styled("  ·  ", theme::dim()));
+        title_spans.push(Span::styled(
+            body,
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(title_spans)).style(theme::base()), rows[0]);
 
     let mut x = rows[2].x + 1;
     let mut active_seg: Option<(u16, u16)> = None;
@@ -960,7 +973,7 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(inner);
 
-    // Filter strip: [ Releases | Modded ]   Show: ✓ Snapshots   ☐ Older
+    // Filter strip: [ Releases | Modded ]   Show: ✓ Snapshots   ☐ Older            [📂 Open folder]
     let modded_active = app.filter == VersionFilter::Modded;
     let filter_cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -970,8 +983,9 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(8),  // "Show:" label
             Constraint::Length(18), // Snapshots pill
             Constraint::Length(2),  // gap
-            Constraint::Length(14), // Older pill (hidden when modded)
-            Constraint::Min(0),
+            Constraint::Length(14), // Older pill (hidden when modded) / loader hint
+            Constraint::Min(0),     // flex
+            Constraint::Length(18), // Open folder button
         ])
         .split(rows[0]);
     draw_segmented(
@@ -1032,6 +1046,25 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
             Paragraph::new(Span::styled(format!("Loader: Fabric {v}"), theme::dim()))
                 .style(theme::base()),
             Rect::new(hint_rect.x, mid, hint_rect.width, 1),
+        );
+    }
+
+    if app.selected_version.is_some() {
+        draw_button(
+            f,
+            app,
+            filter_cols[7],
+            "📂 Open folder",
+            Hit::OpenVersionFolder,
+            false,
+        );
+    } else {
+        draw_dim_clickable_button(
+            f,
+            app,
+            filter_cols[7],
+            "📂 Open folder",
+            Hit::OpenVersionFolder,
         );
     }
 
@@ -1147,23 +1180,19 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
     });
     f.render_widget(block, area);
 
-    // Split off a preview column on the right when there's room.
+    // Split off a preview column on the right when there's room. The cape
+    // (when the user is signed in and owns one) is composited onto the
+    // player figure rather than living in its own panel.
     let show_preview = full_inner.width >= 60;
     let (inner, preview_area) = if show_preview {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(0), Constraint::Length(2), Constraint::Length(20)])
             .split(full_inner);
-        let preview_height = cols[2].height.min(SKIN_PREVIEW_BOX_H);
-        (
-            cols[0],
-            Some(Rect::new(
-                cols[2].x,
-                cols[2].y,
-                cols[2].width,
-                preview_height,
-            )),
-        )
+        let col = cols[2];
+        let skin_h = col.height.min(SKIN_PREVIEW_BOX_H);
+        let skin_rect = Rect::new(col.x, col.y, col.width, skin_h);
+        (cols[0], Some(skin_rect))
     } else {
         (full_inner, None)
     };
@@ -1328,18 +1357,18 @@ fn draw_skin_section(f: &mut Frame, app: &mut App, inner: Rect, mut y: u16, onli
     let apply_label = if online { "Apply skin" } else { "Save skin" };
     let constraints: Vec<Constraint> = if online {
         vec![
-            Constraint::Length(13),
+            Constraint::Length(14),
             Constraint::Length(2),
-            Constraint::Length(13),
+            Constraint::Length(14),
             Constraint::Length(2),
             Constraint::Length(20),
             Constraint::Min(0),
         ]
     } else {
         vec![
-            Constraint::Length(13),
+            Constraint::Length(14),
             Constraint::Length(2),
-            Constraint::Length(13),
+            Constraint::Length(14),
             Constraint::Min(0),
         ]
     };
@@ -1442,57 +1471,42 @@ fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
         Some(preview) => {
             let cols = preview.cols();
             let rows = preview.rows();
-            // True center: account only for the visible content. In pending
-            // mode the "× clear preview" hint sits 1 row below the skin, so
-            // shift the skin up half a row so top padding == bottom padding
-            // around the whole skin+hint block.
-            let extra_below = if pending { 1 } else { 0 };
-            let total_content = rows + extra_below;
+
+            let online_signed_in =
+                app.account_mode == AccountMode::Online && app.account.is_some();
+            let show_cape_row = online_signed_in;
+            let show_rotate_row = true;
+            let show_apply_row = online_signed_in;
+            let clear_hint_h: u16 = if pending { 1 } else { 0 };
+            let controls_h: u16 = (show_cape_row as u16)
+                + (show_rotate_row as u16)
+                + (show_apply_row as u16)
+                + clear_hint_h;
+
+            // Vertically center the skin+controls block as a unit.
+            let total_content = rows + controls_h;
             let x = inner.x + inner.width.saturating_sub(cols) / 2;
             let y = inner.y + inner.height.saturating_sub(total_content) / 2;
             let preview_rect = Rect::new(x, y, cols.min(inner.width), rows.min(inner.height));
+
+            // Resolve which cape texture (if any) the user is currently
+            // viewing — this composites onto the player figure.
+            let (cape_pixels, cape_label, cape_pending, cape_arrows_active) =
+                resolve_cape_view(app);
+
             f.render_widget(
                 SkinPreviewWidget {
                     preview,
                     view: app.skin_view,
+                    cape: cape_pixels,
                 },
                 preview_rect,
             );
 
-            // Rotation arrows sit on the preview box border.
-            let mid_y = preview_rect.y + preview_rect.height / 2;
-            if area.width > 2 && area.height > 2 {
-                let left_rect = Rect::new(area.x, mid_y, 1, 1);
-                let hovered = app.hover == Some(Hit::RotateSkinLeft);
-                let style = if hovered {
-                    Style::default()
-                        .fg(theme::ACCENT_HI)
-                        .bg(theme::BG)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme::ACCENT).bg(theme::BG)
-                };
-                f.render_widget(Paragraph::new("◀").style(style), left_rect);
-                app.click_regions.push((left_rect, Hit::RotateSkinLeft));
+            let mut row_y = preview_rect.y + rows;
 
-                let right_x = area.x + area.width - 1;
-                let right_rect = Rect::new(right_x, mid_y, 1, 1);
-                let hovered = app.hover == Some(Hit::RotateSkinRight);
-                let style = if hovered {
-                    Style::default()
-                        .fg(theme::ACCENT_HI)
-                        .bg(theme::BG)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme::ACCENT).bg(theme::BG)
-                };
-                f.render_widget(Paragraph::new("▶").style(style), right_rect);
-                app.click_regions.push((right_rect, Hit::RotateSkinRight));
-            }
-
-            if pending && inner.height > rows + 1 {
-                let hint_y = preview_rect.y + rows;
-                let hint_rect = Rect::new(inner.x, hint_y, inner.width, 1);
+            if pending && row_y < inner.y + inner.height {
+                let hint_rect = Rect::new(inner.x, row_y, inner.width, 1);
                 let hovered = app.hover == Some(Hit::ClearPreviewButton);
                 let style = if hovered {
                     Style::default()
@@ -1509,6 +1523,68 @@ fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
                     hint_rect,
                 );
                 app.click_regions.push((hint_rect, Hit::ClearPreviewButton));
+                row_y += 1;
+            }
+
+            if show_cape_row && row_y < inner.y + inner.height {
+                draw_arrow_pair_row(
+                    f,
+                    app,
+                    Rect::new(inner.x, row_y, inner.width, 1),
+                    &cape_label,
+                    Style::default().fg(theme::FG_DIM).bg(theme::BG),
+                    Hit::PrevCape,
+                    Hit::NextCape,
+                    cape_arrows_active,
+                );
+                row_y += 1;
+            }
+
+            if show_rotate_row && row_y < inner.y + inner.height {
+                let view_label = match app.skin_view {
+                    crate::skin::SkinView::Front => "Front",
+                    crate::skin::SkinView::Right => "Right",
+                    crate::skin::SkinView::Back => "Back",
+                    crate::skin::SkinView::Left => "Left",
+                };
+                draw_arrow_pair_row(
+                    f,
+                    app,
+                    Rect::new(inner.x, row_y, inner.width, 1),
+                    view_label,
+                    Style::default().fg(theme::FG_DIM).bg(theme::BG),
+                    Hit::RotateSkinLeft,
+                    Hit::RotateSkinRight,
+                    true,
+                );
+                row_y += 1;
+            }
+
+            if show_apply_row && row_y < inner.y + inner.height {
+                let apply_rect = Rect::new(inner.x, row_y, inner.width, 1);
+                let hovered = app.hover == Some(Hit::ApplyCapeButton);
+                let style = if !cape_pending {
+                    Style::default().fg(theme::FG_DIM).bg(theme::BG)
+                } else if hovered {
+                    Style::default()
+                        .fg(theme::ACCENT_HI)
+                        .bg(theme::BG)
+                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                } else {
+                    Style::default()
+                        .fg(theme::GOLD)
+                        .bg(theme::BG)
+                        .add_modifier(Modifier::BOLD)
+                };
+                f.render_widget(
+                    Paragraph::new("Apply")
+                        .style(style)
+                        .alignment(Alignment::Center),
+                    apply_rect,
+                );
+                if cape_pending {
+                    app.click_regions.push((apply_rect, Hit::ApplyCapeButton));
+                }
             }
         }
         None => {
@@ -1525,6 +1601,80 @@ fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
             );
         }
     }
+}
+
+/// Resolve what the user is currently viewing for the cape:
+/// the cape pixels to draw on the player, the label for the selector row,
+/// whether the local choice differs from the server's, and whether the
+/// arrows should be interactive (false when the user owns no capes).
+fn resolve_cape_view<'a>(
+    app: &'a App,
+) -> (Option<&'a crate::skin::CapePixels>, String, bool, bool) {
+    let Some(acc) = app.account.as_ref() else {
+        return (None, "None".to_string(), false, false);
+    };
+    let server_active = acc.capes.iter().position(|c| c.is_active());
+    let viewing_idx = app.local_cape_idx.unwrap_or(server_active);
+    let viewing_cape = viewing_idx.and_then(|i| acc.capes.get(i));
+    let pending = app.local_cape_idx.is_some() && app.local_cape_idx != Some(server_active);
+    let label = match viewing_cape {
+        Some(c) if !c.alias.is_empty() => c.alias.clone(),
+        Some(_) => "Cape".to_string(),
+        None => "None".to_string(),
+    };
+    let pixels = viewing_cape.and_then(|c| app.cape_textures.get(&c.id));
+    let arrows_active = !acc.capes.is_empty();
+    (pixels, label, pending, arrows_active)
+}
+
+fn draw_arrow_pair_row(
+    f: &mut Frame,
+    app: &mut App,
+    rect: Rect,
+    label: &str,
+    label_style: Style,
+    left_hit: Hit,
+    right_hit: Hit,
+    arrows_active: bool,
+) {
+    if rect.width < 3 {
+        return;
+    }
+    let arrow_style = |hover: bool| {
+        if !arrows_active {
+            Style::default().fg(theme::FG_DIM).bg(theme::BG)
+        } else if hover {
+            Style::default()
+                .fg(theme::ACCENT_HI)
+                .bg(theme::BG)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::ACCENT).bg(theme::BG)
+        }
+    };
+    let left_rect = Rect::new(rect.x, rect.y, 1, 1);
+    f.render_widget(
+        Paragraph::new("◀").style(arrow_style(app.hover == Some(left_hit))),
+        left_rect,
+    );
+    if arrows_active {
+        app.click_regions.push((left_rect, left_hit));
+    }
+    let right_rect = Rect::new(rect.x + rect.width - 1, rect.y, 1, 1);
+    f.render_widget(
+        Paragraph::new("▶").style(arrow_style(app.hover == Some(right_hit))),
+        right_rect,
+    );
+    if arrows_active {
+        app.click_regions.push((right_rect, right_hit));
+    }
+    let mid_rect = Rect::new(rect.x + 1, rect.y, rect.width - 2, 1);
+    f.render_widget(
+        Paragraph::new(label)
+            .style(label_style)
+            .alignment(Alignment::Center),
+        mid_rect,
+    );
 }
 
 fn draw_segmented(
@@ -2263,6 +2413,22 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
         draw_button(f, app, ram_cols[0], "−  512 MB", Hit::RamDecrease, false);
         draw_button(f, app, ram_cols[2], "+  512 MB", Hit::RamIncrease, false);
         draw_button(f, app, ram_cols[4], "Open data folder", Hit::OpenDataFolder, false);
+        y += BUTTON_H + 1;
+    }
+    if y + BUTTON_H <= bottom_left {
+        let mc_btn_row = Rect::new(left.x, y, left.width, BUTTON_H);
+        let mc_cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(22), Constraint::Min(0)])
+            .split(mc_btn_row);
+        draw_button(
+            f,
+            app,
+            mc_cols[0],
+            "Open .minecraft",
+            Hit::OpenMinecraftFolder,
+            false,
+        );
     }
 
     // --- RIGHT COLUMN: Java + Maintenance ---

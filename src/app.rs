@@ -16,7 +16,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 const LOG_CAPACITY: usize = 1000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VersionFilter {
     Releases,
     Modded,
@@ -38,6 +38,16 @@ impl VersionFilter {
             "snapshots" | "old" => VersionFilter::Releases,
             _ => return None,
         })
+    }
+
+    /// Short loader name to show next to the selected MC version in the
+    /// header. `None` means vanilla — no suffix needed. Future loaders
+    /// (Forge, NeoForge, Quilt, ...) plug in here.
+    pub fn loader_label(self) -> Option<&'static str> {
+        match self {
+            VersionFilter::Releases => None,
+            VersionFilter::Modded => Some("Fabric"),
+        }
     }
 }
 
@@ -190,6 +200,12 @@ pub struct App {
     pub manifest_error: Option<String>,
 
     pub filter: VersionFilter,
+    /// Per-filter selection cache. When the user switches filter tabs the
+    /// current `selected_version` is parked here under the old filter's key,
+    /// and the new filter's previously-parked pick is loaded back. New
+    /// loaders (Forge, NeoForge, Quilt, ...) automatically get their own
+    /// slot just by virtue of being a new `VersionFilter` variant.
+    pub selections_by_filter: std::collections::HashMap<VersionFilter, Option<String>>,
     pub list_offset: usize,
     pub selected_version: Option<String>,
 
@@ -220,6 +236,13 @@ pub struct App {
     pub play_inner: Rect,
 
     pub skin_preview: Option<SkinPreview>,
+    /// Cape texture cache keyed by cape id — populated once after sign-in so
+    /// cycling between capes doesn't re-fetch over the network every time.
+    pub cape_textures: std::collections::HashMap<String, crate::skin::CapePixels>,
+    /// What the user is *currently* looking at while cycling capes. None means
+    /// "no cape", Some(i) means capes[i]. The server is only updated when the
+    /// user presses Apply.
+    pub local_cape_idx: Option<Option<usize>>,
     pub skin_pending_preview: Option<SkinPreview>,
     pub skin_pending_loading: bool,
     pub skin_url_input: String,
@@ -352,7 +375,32 @@ impl App {
             manifest_error: None,
             filter: saved_filter,
             list_offset: 0,
-            selected_version: saved_version,
+            selected_version: {
+                let from_map = cfg_opt
+                    .as_ref()
+                    .and_then(|c| c.selections_by_filter.get(saved_filter.as_str()).cloned());
+                from_map.or(saved_version.clone())
+            },
+            selections_by_filter: {
+                let mut m: std::collections::HashMap<VersionFilter, Option<String>> =
+                    std::collections::HashMap::new();
+                if let Some(cfg) = cfg_opt.as_ref() {
+                    for (k, v) in &cfg.selections_by_filter {
+                        if let Some(f) = VersionFilter::parse(k) {
+                            m.insert(f, Some(v.clone()));
+                        }
+                    }
+                }
+                // Legacy migration: if the per-filter map is empty but the
+                // old single-version field exists, seed the active filter's
+                // slot from it.
+                if m.is_empty() {
+                    if let Some(v) = saved_version.clone() {
+                        m.insert(saved_filter, Some(v));
+                    }
+                }
+                m
+            },
             hover: None,
             click_regions: Vec::with_capacity(64),
             account: None,
@@ -376,6 +424,8 @@ impl App {
             dragging_scrollbar: None,
             play_inner: Rect::default(),
             skin_preview: None,
+            cape_textures: std::collections::HashMap::new(),
+            local_cape_idx: None,
             skin_pending_preview: None,
             skin_pending_loading: false,
             skin_url_input: saved_skin_url,
@@ -494,6 +544,23 @@ impl App {
         self.fabric_loaders.first().map(|s| s.as_str())
     }
 
+    /// Park the current filter's selection and load the destination filter's
+    /// previously-parked pick (or `None`). Each loader keeps its own slot.
+    pub fn switch_filter(&mut self, new_filter: VersionFilter) {
+        if self.filter == new_filter {
+            return;
+        }
+        self.selections_by_filter
+            .insert(self.filter, self.selected_version.clone());
+        self.selected_version = self
+            .selections_by_filter
+            .get(&new_filter)
+            .cloned()
+            .unwrap_or(None);
+        self.filter = new_filter;
+        self.list_offset = 0;
+    }
+
     pub fn selected_modded_id(&self) -> Option<String> {
         self.modded_id_for(self.selected_version.as_ref()?)
     }
@@ -564,6 +631,51 @@ impl App {
     pub fn current_instance_dir(&self) -> Option<PathBuf> {
         let id = self.selected_modded_id()?;
         Some(self.paths.instances.join(&id))
+    }
+
+    pub fn flush_local_cape_change(&mut self) {
+        let Some(acc) = self.account.clone() else { return };
+        let Some(local) = self.local_cape_idx else { return };
+        let server_active_idx = acc.capes.iter().position(|c| c.is_active());
+        if local == server_active_idx {
+            // Landed back on whatever's already active — nothing to push.
+            self.local_cape_idx = None;
+            return;
+        }
+        let token = acc.access_token.clone();
+        let client = self.client.clone();
+        let tx = self.worker_tx.clone();
+        let target_alias = local
+            .and_then(|i| acc.capes.get(i))
+            .map(|c| c.alias.clone())
+            .unwrap_or_default();
+        self.status_message = match local {
+            None => "Hiding cape...".into(),
+            Some(_) if !target_alias.is_empty() => format!("Switching cape to {target_alias}..."),
+            Some(_) => "Switching cape...".into(),
+        };
+        let target_id: Option<String> = local.and_then(|i| acc.capes.get(i)).map(|c| c.id.clone());
+        tokio::spawn(async move {
+            let api_result = match target_id {
+                None => crate::auth::hide_cape(&client, &token).await,
+                Some(id) => crate::auth::set_active_cape(&client, &token, &id).await,
+            };
+            match api_result {
+                Ok(()) => match crate::auth::refresh_capes(&client, &token).await {
+                    Ok(capes) => {
+                        let _ = tx.send(WorkerMsg::CapeChanged(capes));
+                    }
+                    Err(e) => {
+                        let _ = tx.send(WorkerMsg::CapeFailed(format!(
+                            "set ok but couldn't refresh: {e:#}"
+                        )));
+                    }
+                },
+                Err(e) => {
+                    let _ = tx.send(WorkerMsg::CapeFailed(format!("{e:#}")));
+                }
+            }
+        });
     }
 
     pub fn reload_meta(&mut self) {
@@ -687,9 +799,11 @@ impl App {
                 self.auth_device_code = None;
                 self.status_message = format!("Signed in as {}", a.username);
                 let uuid = a.uuid.clone();
+                let owned_capes = a.capes.clone();
                 self.account = Some(a);
                 self.account_mode = AccountMode::Online;
                 spawn_skin_preview(self.client.clone(), self.worker_tx.clone(), uuid);
+                spawn_cape_cache(self.client.clone(), self.worker_tx.clone(), owned_capes);
             }
             WorkerMsg::AuthFailed(e) => {
                 self.auth_in_progress = false;
@@ -772,6 +886,29 @@ impl App {
                 self.skin_busy = false;
                 self.skin_error = Some(e.clone());
                 self.status_message = format!("Skin change failed: {e}");
+            }
+            WorkerMsg::CapeChanged(capes) => {
+                let to_cache: Vec<crate::auth::Cape> = capes
+                    .iter()
+                    .filter(|c| !self.cape_textures.contains_key(&c.id) && !c.url.is_empty())
+                    .cloned()
+                    .collect();
+                if let Some(acc) = self.account.as_mut() {
+                    acc.capes = capes;
+                }
+                if !to_cache.is_empty() {
+                    spawn_cape_cache(self.client.clone(), self.worker_tx.clone(), to_cache);
+                }
+                // Server state matches what the user wanted — drop the local
+                // override so future renders read directly from acc.capes.
+                self.local_cape_idx = None;
+                self.status_message = "Cape updated".into();
+            }
+            WorkerMsg::CapeFailed(e) => {
+                self.status_message = format!("Cape change failed: {e}");
+            }
+            WorkerMsg::CapeTextureLoaded { cape_id, pixels } => {
+                self.cape_textures.insert(cape_id, pixels);
             }
             WorkerMsg::UpdateCheckStarted => {
                 self.update_status = UpdateStatus::Checking;
@@ -1052,6 +1189,33 @@ pub fn spawn_skin_preview(
             Err(e) => tracing::warn!("skin preview fetch failed: {e}"),
         }
     });
+}
+
+/// Fetch every cape texture the user owns once and stash each in the cache.
+/// Cycling between capes after this is purely a local-state operation —
+/// no further network calls, no rate-limit concerns.
+pub fn spawn_cape_cache(
+    client: reqwest::Client,
+    tx: UnboundedSender<WorkerMsg>,
+    capes: Vec<crate::auth::Cape>,
+) {
+    for cape in capes {
+        if cape.url.is_empty() {
+            continue;
+        }
+        let client = client.clone();
+        let tx = tx.clone();
+        let id = cape.id.clone();
+        let url = cape.url.clone();
+        tokio::spawn(async move {
+            match crate::skin::fetch_cape(&client, &url).await {
+                Ok(pixels) => {
+                    let _ = tx.send(WorkerMsg::CapeTextureLoaded { cape_id: id, pixels });
+                }
+                Err(e) => tracing::warn!("cape texture fetch failed for {id}: {e}"),
+            }
+        });
+    }
 }
 
 pub fn spawn_news_fetch(client: reqwest::Client, tx: UnboundedSender<WorkerMsg>) {

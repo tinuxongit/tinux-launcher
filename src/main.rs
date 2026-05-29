@@ -530,12 +530,12 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             app.focus = Focus::None;
         }
         Hit::FilterReleases => {
-            app.filter = app::VersionFilter::Releases;
-            app.list_offset = 0;
+            app.switch_filter(app::VersionFilter::Releases);
+            config::save_active_filter(app.filter.as_str());
         }
         Hit::FilterModded => {
-            app.filter = app::VersionFilter::Modded;
-            app.list_offset = 0;
+            app.switch_filter(app::VersionFilter::Modded);
+            config::save_active_filter(app.filter.as_str());
         }
         Hit::ToggleShowSnapshots => {
             app.show_snapshots = !app.show_snapshots;
@@ -708,7 +708,11 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         Hit::VersionRow(i) => {
             let visible = app.visible_versions();
             if let Some(v) = visible.get(i) {
-                app.selected_version = Some(v.id.clone());
+                let id = v.id.clone();
+                app.selected_version = Some(id.clone());
+                app.selections_by_filter
+                    .insert(app.filter, Some(id.clone()));
+                config::save_selection(app.filter.as_str(), &id);
             }
         }
         Hit::LaunchButton => trigger_launch(app),
@@ -794,6 +798,23 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         }
         Hit::RotateSkinLeft => app.skin_view = app.skin_view.prev(),
         Hit::RotateSkinRight => app.skin_view = app.skin_view.next(),
+        Hit::PrevCape => trigger_cape_cycle(app, -1),
+        Hit::NextCape => trigger_cape_cycle(app, 1),
+        Hit::ApplyCapeButton => app.flush_local_cape_change(),
+        Hit::OpenVersionFolder => {
+            let Some(id) = app.selected_version.clone() else {
+                app.status_message = "Pick a version first".into();
+                return;
+            };
+            let dir = app.paths.version_dir(&id);
+            open_path(&dir);
+            app.status_message = format!("Opened {}", dir.display());
+        }
+        Hit::OpenMinecraftFolder => {
+            let dir = app.paths.vanilla_minecraft.clone();
+            open_path(&dir);
+            app.status_message = format!("Opened {}", dir.display());
+        }
     }
 }
 
@@ -814,6 +835,24 @@ fn trigger_login(app: &mut App) {
             }
         }
     });
+}
+
+/// Spawn the OS file manager on a given path. Errors are swallowed —
+/// nothing user-facing happens beyond a status message at the call site.
+fn open_path(path: &std::path::Path) {
+    let _ = std::fs::create_dir_all(path);
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer").arg(path).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(path).spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    }
 }
 
 fn trigger_install(app: &mut App) {
@@ -1244,6 +1283,38 @@ fn trigger_apply_skin(app: &mut App) {
             }
         }
     });
+}
+
+fn trigger_cape_cycle(app: &mut App, delta: i32) {
+    let Some(acc) = app.account.as_ref() else {
+        app.status_message = "Sign in first".into();
+        return;
+    };
+    if acc.capes.is_empty() {
+        app.status_message = "You don't own any capes".into();
+        return;
+    }
+    let len = acc.capes.len() as i32;
+    // Slots: 0..=len-1 are capes, slot `len` is "hidden". Cycle wraps around.
+    let current_slot: i32 = match cape_view_idx(app, acc) {
+        Some(i) => i as i32,
+        None => len,
+    };
+    let next_slot = (current_slot + delta).rem_euclid(len + 1);
+    app.local_cape_idx = Some(if next_slot == len {
+        None
+    } else {
+        Some(next_slot as usize)
+    });
+}
+
+/// Returns the cape index the UI should be displaying right now: the user's
+/// pending local choice if there is one, otherwise the server's active cape.
+fn cape_view_idx(app: &App, acc: &auth::Account) -> Option<usize> {
+    if let Some(local) = app.local_cape_idx {
+        return local;
+    }
+    acc.capes.iter().position(|c| c.is_active())
 }
 
 fn trigger_reset_skin(app: &mut App) {

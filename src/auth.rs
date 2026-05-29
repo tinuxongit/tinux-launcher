@@ -20,6 +20,24 @@ pub struct Account {
     pub access_token: String,
     #[serde(default)]
     pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub capes: Vec<Cape>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Cape {
+    pub id: String,
+    /// Mojang returns "ACTIVE" or "INACTIVE".
+    pub state: String,
+    pub url: String,
+    #[serde(default)]
+    pub alias: String,
+}
+
+impl Cape {
+    pub fn is_active(&self) -> bool {
+        self.state.eq_ignore_ascii_case("ACTIVE")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -129,6 +147,45 @@ pub async fn upload_skin_file(
         bail!("upload skin HTTP {s}: {t}");
     }
     Ok(())
+}
+
+pub async fn set_active_cape(
+    http: &reqwest::Client,
+    token: &str,
+    cape_id: &str,
+) -> Result<()> {
+    let resp = http
+        .put("https://api.minecraftservices.com/minecraft/profile/capes/active")
+        .bearer_auth(token)
+        .json(&serde_json::json!({ "capeId": cape_id }))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let s = resp.status();
+        let t = resp.text().await.unwrap_or_default();
+        bail!("set cape HTTP {s}: {t}");
+    }
+    Ok(())
+}
+
+pub async fn hide_cape(http: &reqwest::Client, token: &str) -> Result<()> {
+    let resp = http
+        .delete("https://api.minecraftservices.com/minecraft/profile/capes/active")
+        .bearer_auth(token)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let s = resp.status();
+        let t = resp.text().await.unwrap_or_default();
+        bail!("hide cape HTTP {s}: {t}");
+    }
+    Ok(())
+}
+
+/// Re-fetch the user's MC profile to pick up cape changes that we just made.
+pub async fn refresh_capes(http: &reqwest::Client, token: &str) -> Result<Vec<Cape>> {
+    let r = mc_profile(http, token).await?;
+    Ok(r.capes)
 }
 
 pub async fn reset_skin(http: &reqwest::Client, token: &str) -> Result<()> {
@@ -298,6 +355,7 @@ async fn ms_to_account(http: &reqwest::Client, ms: &MsToken) -> Result<Account> 
         uuid: profile.id,
         access_token: mc_token,
         refresh_token: ms.refresh_token.clone(),
+        capes: profile.capes,
     })
 }
 
@@ -403,6 +461,8 @@ async fn mc_login(http: &reqwest::Client, uhs: &str, xsts_token: &str) -> Result
 struct McProfile {
     id: String,
     name: String,
+    #[serde(default)]
+    capes: Vec<Cape>,
 }
 
 async fn mc_profile(http: &reqwest::Client, mc_token: &str) -> Result<McProfile> {

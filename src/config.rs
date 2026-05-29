@@ -14,6 +14,11 @@ pub struct Config {
     pub last_played_version: Option<String>,
     #[serde(default)]
     pub last_filter: Option<String>,
+    /// Selected MC version per filter tab, so each loader's tab restores
+    /// independently. Keyed by `VersionFilter::as_str()`. New loaders plug
+    /// in here automatically.
+    #[serde(default)]
+    pub selections_by_filter: HashMap<String, String>,
     #[serde(default)]
     pub show_snapshots: bool,
     #[serde(default)]
@@ -56,7 +61,21 @@ pub fn save_last_played(version: &str, filter: &str) {
     update(|c| {
         c.last_played_version = Some(version.to_string());
         c.last_filter = Some(filter.to_string());
+        c.selections_by_filter
+            .insert(filter.to_string(), version.to_string());
     });
+}
+
+pub fn save_selection(filter: &str, version: &str) {
+    update(|c| {
+        c.selections_by_filter
+            .insert(filter.to_string(), version.to_string());
+        c.last_filter = Some(filter.to_string());
+    });
+}
+
+pub fn save_active_filter(filter: &str) {
+    update(|c| c.last_filter = Some(filter.to_string()));
 }
 
 pub fn save_version_toggles(show_snapshots: bool, show_older: bool) {

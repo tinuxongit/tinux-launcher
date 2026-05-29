@@ -45,6 +45,24 @@ pub struct SkinPreview {
     src_h: u32,
 }
 
+/// Decoded cape texture. Rendered in its own widget (separate from the skin),
+/// since users want to see the cape on its own panel rather than overlaid.
+#[derive(Debug, Clone)]
+pub struct CapePixels {
+    pixels: Vec<[u8; 4]>,
+    pub w: u32,
+    pub h: u32,
+}
+
+impl CapePixels {
+    pub fn px(&self, x: u32, y: u32) -> [u8; 4] {
+        if x >= self.w || y >= self.h {
+            return [0, 0, 0, 0];
+        }
+        self.pixels[(y * self.w + x) as usize]
+    }
+}
+
 impl SkinPreview {
     pub fn rows(&self) -> u16 {
         (PREVIEW_H as u16) / 2
@@ -60,7 +78,7 @@ impl SkinPreview {
         self.src[(y * self.src_w + x) as usize]
     }
 
-    fn compose(&self, view: SkinView) -> Vec<[u8; 4]> {
+    fn compose(&self, view: SkinView, cape: Option<&CapePixels>) -> Vec<[u8; 4]> {
         let mut out = vec![[0u8; 4]; (PREVIEW_W * PREVIEW_H) as usize];
         let put = |out: &mut [[u8; 4]], x: u32, y: u32, c: [u8; 4]| {
             if x < PREVIEW_W && y < PREVIEW_H && c[3] >= 128 {
@@ -79,6 +97,22 @@ impl SkinPreview {
                 for i in 0..sw {
                     let src_i = if mirror { sw - 1 - i } else { i };
                     put(out, dx + i, dy + j, self.src_px(sx + src_i, sy + j));
+                }
+            }
+        };
+        // Cape outside face on a vanilla cape texture: U=1, V=1, W=10, H=16.
+        let cape_blit = |out: &mut [[u8; 4]],
+                         cape: &CapePixels,
+                         sx: u32,
+                         sw: u32,
+                         dx: u32,
+                         dy: u32| {
+            const CAPE_SY: u32 = 1;
+            const CAPE_H: u32 = 16;
+            for j in 0..CAPE_H {
+                for i in 0..sw {
+                    let px = cape.px(sx + i, CAPE_SY + j);
+                    put(out, dx + i, dy + j, px);
                 }
             }
         };
@@ -144,11 +178,38 @@ impl SkinPreview {
                 (0, 52, 4, 12, 6, 20, false),
             ],
         };
+        // Cape drawn behind the body for non-back views — for the side views
+        // a 1-col strip peeks out at the player's back edge; for Front it's
+        // entirely covered but we still draw the sliver so arms occlude it
+        // correctly if a custom skin leaves gaps.
+        if let Some(cape) = cape {
+            match view {
+                SkinView::Front => {
+                    cape_blit(&mut out, cape, 1, 10, 3, 8);
+                }
+                SkinView::Right => {
+                    // In MC's body right-surface texture, screen-left of the
+                    // rendered body is the player's back. Cape strip sits at
+                    // dx=5, just left of the body (dx=6..10).
+                    cape_blit(&mut out, cape, 1, 1, 5, 8);
+                }
+                SkinView::Left => {
+                    // Mirror of Right: screen-right of the rendered body is
+                    // the player's back. Cape strip at dx=10.
+                    cape_blit(&mut out, cape, 10, 1, 10, 8);
+                }
+                SkinView::Back => {}
+            }
+        }
         for &(sx, sy, sw, sh, dx, dy, mir) in base {
             blit(&mut out, sx, sy, sw, sh, dx, dy, mir);
         }
         for &(sx, sy, sw, sh, dx, dy, mir) in overlay {
             blit(&mut out, sx, sy, sw, sh, dx, dy, mir);
+        }
+        // Back view: cape covers the body, drawn on top.
+        if let (Some(cape), SkinView::Back) = (cape, view) {
+            cape_blit(&mut out, cape, 1, 10, 3, 8);
         }
         out
     }
@@ -217,6 +278,43 @@ pub async fn fetch_preview(client: &reqwest::Client, url: &str) -> Result<SkinPr
     decode_and_compose(&bytes)
 }
 
+pub async fn fetch_cape(client: &reqwest::Client, url: &str) -> Result<CapePixels> {
+    let bytes = client
+        .get(url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    decode_cape(&bytes)
+}
+
+fn decode_cape(bytes: &[u8]) -> Result<CapePixels> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let mut reader = decoder.read_info().context("cape png read_info")?;
+    let mut raw = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut raw).context("cape png next_frame")?;
+    let w = info.width;
+    let h = info.height;
+    let stride = match info.color_type {
+        png::ColorType::Rgba => 4,
+        png::ColorType::Rgb => 3,
+        other => anyhow::bail!("unsupported cape color type: {other:?}"),
+    };
+    let mut pixels = Vec::with_capacity((w * h) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let i = ((y * w + x) as usize) * stride;
+            let r = raw[i];
+            let g = raw[i + 1];
+            let b = raw[i + 2];
+            let a = if stride == 4 { raw[i + 3] } else { 255 };
+            pixels.push([r, g, b, a]);
+        }
+    }
+    Ok(CapePixels { pixels, w, h })
+}
+
 #[derive(Debug, Deserialize)]
 struct UuidLookup {
     id: String,
@@ -273,17 +371,22 @@ fn decode_and_compose(bytes: &[u8]) -> Result<SkinPreview> {
             src.push([r, g, b, a]);
         }
     }
-    Ok(SkinPreview { src, src_w: w, src_h: h })
+    Ok(SkinPreview {
+        src,
+        src_w: w,
+        src_h: h,
+    })
 }
 
 pub struct SkinPreviewWidget<'a> {
     pub preview: &'a SkinPreview,
     pub view: SkinView,
+    pub cape: Option<&'a CapePixels>,
 }
 
 impl<'a> Widget for SkinPreviewWidget<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let pixels = self.preview.compose(self.view);
+        let pixels = self.preview.compose(self.view, self.cape);
         let px = |x: u32, y: u32| -> [u8; 4] {
             if x >= PREVIEW_W || y >= PREVIEW_H {
                 return [0, 0, 0, 0];
