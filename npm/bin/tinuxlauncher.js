@@ -103,8 +103,16 @@ function spawnDetachedWindow() {
       [
         "-w",
         "-1",
+        "new-tab",
         "-p",
         WINDOWS_TERMINAL_PROFILE,
+        "--title",
+        WINDOWS_TERMINAL_PROFILE,
+        "--suppressApplicationTitle",
+        "--startingDirectory",
+        path.dirname(bin),
+        bin,
+        WINDOWS_OWN_CONSOLE_ARG,
       ],
       {
         stdio: "ignore",
@@ -114,6 +122,29 @@ function spawnDetachedWindow() {
     if (!wt.error && wt.status === 0) {
       return true;
     }
+  }
+
+  const wt = spawnSync(
+    "wt.exe",
+    [
+      "-w",
+      "-1",
+      "new-tab",
+      "--title",
+      WINDOWS_TERMINAL_PROFILE,
+      "--suppressApplicationTitle",
+      "--startingDirectory",
+      path.dirname(bin),
+      bin,
+      WINDOWS_OWN_CONSOLE_ARG,
+    ],
+    {
+      stdio: "ignore",
+      windowsHide: true,
+    },
+  );
+  if (!wt.error && wt.status === 0) {
+    return true;
   }
 
   const result = spawnSync(

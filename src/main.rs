@@ -141,9 +141,29 @@ fn relaunch_in_own_console() -> Result<bool> {
 
 #[cfg(windows)]
 fn open_with_windows_terminal(exe: &std::path::Path) -> Result<bool> {
-    install_windows_terminal_profile(exe)?;
+    if install_windows_terminal_profile(exe).is_ok() && spawn_windows_terminal(exe, true)? {
+        return Ok(true);
+    }
+    spawn_windows_terminal(exe, false)
+}
+
+#[cfg(windows)]
+fn spawn_windows_terminal(exe: &std::path::Path, use_profile: bool) -> Result<bool> {
+    let starting_directory = exe.parent().unwrap_or_else(|| std::path::Path::new("."));
     let mut cmd = std::process::Command::new("wt.exe");
-    cmd.args(["-w", "-1", "-p", APP_TITLE]);
+    cmd.args(["-w", "-1", "new-tab"]);
+    if use_profile {
+        cmd.args(["-p", APP_TITLE]);
+    }
+    cmd.args([
+        "--title",
+        APP_TITLE,
+        "--suppressApplicationTitle",
+        "--startingDirectory",
+    ])
+    .arg(starting_directory)
+    .arg(exe)
+    .arg(OWN_CONSOLE_ARG);
     let status = match cmd.status() {
         Ok(status) => status,
         Err(_) => return Ok(false),
