@@ -4,6 +4,18 @@ Terminal Minecraft Java Edition launcher.
 
 ## Install & run
 
+### npm
+
+From GitHub:
+
+```bash
+npm install -g https://github.com/tinuxongit/tinux-launcher/archive/refs/heads/main.tar.gz
+tinuxlauncher
+```
+
+Use the GitHub tarball URL with npm. The `github:tinuxongit/tinux-launcher`
+shorthand can install incompletely on Windows with newer npm versions.
+
 ### pnpm
 
 From GitHub:
