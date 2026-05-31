@@ -33,8 +33,20 @@ if (args[0] === "update" || args[0] === "--update") {
 }
 
 if (args[0] === "--version" || args[0] === "-v") {
-  const pkg = require("../../package.json");
-  console.log(pkg.version);
+  if (!fs.existsSync(bin)) {
+    installBinary() || buildRelease();
+  }
+  if (fs.existsSync(bin)) {
+    const result = spawnSync(bin, ["--version"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (!result.error && result.status === 0 && result.stdout.trim()) {
+      console.log(result.stdout.trim());
+      process.exit(0);
+    }
+  }
+  console.log(require("../../package.json").version);
   process.exit(0);
 }
 

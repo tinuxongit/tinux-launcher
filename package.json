@@ -1,6 +1,6 @@
 {
   "name": "tinuxlauncher",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "description": "Terminal Minecraft Java launcher",
   "license": "MIT",
   "repository": {
@@ -12,7 +12,8 @@
   },
   "homepage": "https://github.com/tinuxongit/tinux-launcher#readme",
   "bin": {
-    "tinuxlauncher": "npm/bin/tinuxlauncher.js"
+    "tinuxlauncher": "npm/bin/tinuxlauncher.js",
+    "tinux": "npm/bin/tinuxlauncher.js"
   },
   "scripts": {
     "build": "cargo build --release",

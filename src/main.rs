@@ -49,6 +49,10 @@ const ICON_BYTES: &[u8] = include_bytes!("../assets/tinux-icon.ico");
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if handle_cli_info_args() {
+        return Ok(());
+    }
+
     if relaunch_in_own_console()? {
         return Ok(());
     }
@@ -87,6 +91,24 @@ async fn main() -> Result<()> {
         eprintln!("error: {e:#}");
     }
     result
+}
+
+fn handle_cli_info_args() -> bool {
+    let Some(arg) = std::env::args().nth(1) else {
+        return false;
+    };
+    match arg.as_str() {
+        "--version" | "-v" => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            true
+        }
+        "--help" | "-h" => {
+            println!("Tinux Launcher {}", env!("CARGO_PKG_VERSION"));
+            println!("Usage: tinuxlauncher [update|--version|--help]");
+            true
+        }
+        _ => false,
+    }
 }
 
 #[cfg(windows)]
