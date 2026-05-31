@@ -14,17 +14,7 @@ const WINDOWS_OWN_CONSOLE_ARG = "--tinux-own-console";
 const WINDOWS_TERMINAL_PROFILE = "Tinux Launcher";
 
 if (args[0] === "update" || args[0] === "--update") {
-  if (fs.existsSync(bin)) {
-    try {
-      fs.rmSync(bin, { force: true });
-    } catch (error) {
-      console.error(`Could not remove old binary at ${bin}: ${error.message}`);
-      console.error("If Tinux Launcher is currently running, close it and try again.");
-      process.exit(1);
-    }
-  }
-  if (installBinary()) {
-    console.log("Tinux Launcher is up to date.");
+  if (installBinary(["--update"])) {
     process.exit(0);
   }
   console.error("Update failed. You can reinstall manually with:");
@@ -77,8 +67,8 @@ if (result.error) {
 
 process.exit(result.status ?? 0);
 
-function installBinary() {
-  const result = spawnSync(process.execPath, ["npm/scripts/install-binary.js"], {
+function installBinary(extraArgs = []) {
+  const result = spawnSync(process.execPath, ["npm/scripts/install-binary.js", ...extraArgs], {
     cwd: root,
     stdio: "inherit",
     windowsHide: false,
