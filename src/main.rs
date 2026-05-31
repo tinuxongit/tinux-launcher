@@ -43,6 +43,8 @@ const TERMINAL_ROWS: u16 = 38;
 const APP_TITLE: &str = "Tinux Launcher";
 const OWN_CONSOLE_ARG: &str = "--tinux-own-console";
 #[cfg(windows)]
+const WINDOWS_TERMINAL_PROFILE_GUID: &str = "{8f5d7c45-c75f-4c5d-a151-8e3b6a19f1a5}";
+#[cfg(windows)]
 const ICON_BYTES: &[u8] = include_bytes!("../assets/tinux-icon.ico");
 
 #[tokio::main]
@@ -117,27 +119,9 @@ fn relaunch_in_own_console() -> Result<bool> {
 
 #[cfg(windows)]
 fn open_with_windows_terminal(exe: &std::path::Path) -> Result<bool> {
-    let icon = materialize_window_icon()?;
+    install_windows_terminal_profile(exe)?;
     let mut cmd = std::process::Command::new("wt.exe");
-    cmd.args([
-        "--window",
-        "new",
-        "new-tab",
-        "--title",
-        APP_TITLE,
-        "--icon",
-    ])
-    .arg(icon)
-    .arg("--startingDirectory");
-    if let Ok(cwd) = std::env::current_dir() {
-        cmd.arg(cwd);
-    } else if let Some(parent) = exe.parent() {
-        cmd.arg(parent);
-    } else {
-        cmd.arg(".");
-    }
-    cmd.arg(exe).arg(OWN_CONSOLE_ARG);
-    cmd.args(std::env::args_os().skip(1));
+    cmd.args(["-w", "-1", "-p", APP_TITLE]);
     let status = match cmd.status() {
         Ok(status) => status,
         Err(_) => return Ok(false),
@@ -146,14 +130,58 @@ fn open_with_windows_terminal(exe: &std::path::Path) -> Result<bool> {
 }
 
 #[cfg(windows)]
-fn materialize_window_icon() -> Result<std::path::PathBuf> {
-    let dir = std::env::temp_dir().join("tinux-launcher");
-    std::fs::create_dir_all(&dir).context("creating launcher temp icon dir")?;
+fn install_windows_terminal_profile(exe: &std::path::Path) -> Result<()> {
+    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
+        anyhow::bail!("LOCALAPPDATA is not set");
+    };
+    let dir = std::path::PathBuf::from(local_app_data)
+        .join("Microsoft")
+        .join("Windows Terminal")
+        .join("Fragments")
+        .join("TinuxLauncher");
+    std::fs::create_dir_all(&dir).context("creating Windows Terminal profile dir")?;
     let path = dir.join("tinux-icon.ico");
     if std::fs::read(&path).ok().as_deref() != Some(ICON_BYTES) {
-        std::fs::write(&path, ICON_BYTES).context("writing launcher temp icon")?;
+        std::fs::write(&path, ICON_BYTES).context("writing Windows Terminal profile icon")?;
     }
-    Ok(path)
+    let commandline = launcher_profile_commandline(exe);
+    let starting_directory = exe
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    let fragment = serde_json::json!({
+        "profiles": [{
+            "guid": WINDOWS_TERMINAL_PROFILE_GUID,
+            "name": APP_TITLE,
+            "commandline": commandline,
+            "startingDirectory": starting_directory,
+            "icon": path.display().to_string(),
+            "suppressApplicationTitle": true
+        }]
+    });
+    let bytes = serde_json::to_vec_pretty(&fragment)?;
+    std::fs::write(dir.join("tinux-launcher.json"), bytes)
+        .context("writing Windows Terminal profile fragment")?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn launcher_profile_commandline(exe: &std::path::Path) -> String {
+    let mut parts = vec![
+        quote_windows_arg(&exe.as_os_str().to_string_lossy()),
+        OWN_CONSOLE_ARG.to_string(),
+    ];
+    parts.extend(
+        std::env::args_os()
+            .skip(1)
+            .map(|arg| quote_windows_arg(&arg.to_string_lossy())),
+    );
+    parts.join(" ")
+}
+
+#[cfg(windows)]
+fn quote_windows_arg(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\\\""))
 }
 
 #[cfg(not(windows))]

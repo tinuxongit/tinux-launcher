@@ -11,6 +11,7 @@ const bin = path.join(root, "target", "release", exeName);
 const icon = path.join(root, "assets", "tinux-icon.ico");
 const args = process.argv.slice(2);
 const WINDOWS_OWN_CONSOLE_ARG = "--tinux-own-console";
+const WINDOWS_TERMINAL_PROFILE = "Tinux Launcher";
 
 if (args[0] === "update" || args[0] === "--update") {
   if (fs.existsSync(bin)) {
@@ -94,21 +95,14 @@ function buildRelease() {
 }
 
 function spawnDetachedWindow() {
-  if (fs.existsSync(icon)) {
+  if (installWindowsTerminalProfile()) {
     const wt = spawnSync(
       "wt.exe",
       [
-        "--window",
-        "new",
-        "new-tab",
-        "--title",
-        "Tinux Launcher",
-        "--icon",
-        icon,
-        "--startingDirectory",
-        path.dirname(bin),
-        bin,
-        WINDOWS_OWN_CONSOLE_ARG,
+        "-w",
+        "-1",
+        "-p",
+        WINDOWS_TERMINAL_PROFILE,
       ],
       {
         stdio: "ignore",
@@ -142,4 +136,45 @@ function spawnDetachedWindow() {
     return false;
   }
   return result.status === 0;
+}
+
+function installWindowsTerminalProfile() {
+  if (!process.env.LOCALAPPDATA || !fs.existsSync(icon)) {
+    return false;
+  }
+  try {
+    const dir = path.join(
+      process.env.LOCALAPPDATA,
+      "Microsoft",
+      "Windows Terminal",
+      "Fragments",
+      "TinuxLauncher",
+    );
+    fs.mkdirSync(dir, { recursive: true });
+    const profileIcon = path.join(dir, "tinux-icon.ico");
+    fs.copyFileSync(icon, profileIcon);
+    const fragment = {
+      profiles: [
+        {
+          guid: "{8f5d7c45-c75f-4c5d-a151-8e3b6a19f1a5}",
+          name: WINDOWS_TERMINAL_PROFILE,
+          commandline: `${quoteWindowsArg(bin)} ${WINDOWS_OWN_CONSOLE_ARG}`,
+          startingDirectory: path.dirname(bin),
+          icon: profileIcon,
+          suppressApplicationTitle: true,
+        },
+      ],
+    };
+    fs.writeFileSync(
+      path.join(dir, "tinux-launcher.json"),
+      `${JSON.stringify(fragment, null, 2)}\n`,
+    );
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function quoteWindowsArg(value) {
+  return `"${String(value).replace(/"/g, '\\"')}"`;
 }
