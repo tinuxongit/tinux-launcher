@@ -20,7 +20,7 @@ mod update;
 mod version;
 mod worker;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use app::{AccountMode, App, Focus, LaunchState, SkinModel};
 use crossterm::{
     event::{
@@ -41,9 +41,14 @@ use tokio::sync::mpsc::unbounded_channel;
 const TERMINAL_COLS: u16 = 120;
 const TERMINAL_ROWS: u16 = 38;
 const APP_TITLE: &str = "Tinux Launcher";
+const OWN_CONSOLE_ARG: &str = "--tinux-own-console";
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if relaunch_in_own_console()? {
+        return Ok(());
+    }
+
     let paths = paths::Paths::resolve()?;
     let _log_guard = logging::init(&paths.logs)?;
     config::ensure_stub();
@@ -78,6 +83,35 @@ async fn main() -> Result<()> {
         eprintln!("error: {e:#}");
     }
     result
+}
+
+#[cfg(windows)]
+fn relaunch_in_own_console() -> Result<bool> {
+    if std::env::var_os("TINUX_INLINE").is_some()
+        || std::env::var_os("TINUX_OWN_CONSOLE").is_some()
+        || std::env::args_os().any(|arg| arg == OWN_CONSOLE_ARG)
+    {
+        return Ok(false);
+    }
+
+    use std::os::windows::process::CommandExt;
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+    let exe = std::env::current_exe().context("locating launcher executable")?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(std::env::args_os().skip(1))
+        .env("TINUX_OWN_CONSOLE", "1")
+        .creation_flags(CREATE_NEW_CONSOLE);
+    if let Ok(cwd) = std::env::current_dir() {
+        cmd.current_dir(cwd);
+    }
+    cmd.spawn().context("opening Tinux Launcher window")?;
+    Ok(true)
+}
+
+#[cfg(not(windows))]
+fn relaunch_in_own_console() -> Result<bool> {
+    Ok(false)
 }
 
 fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, Option<(u16, u16)>)> {

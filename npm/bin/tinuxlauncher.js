@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { spawn, spawnSync } = require("node:child_process");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -9,6 +9,7 @@ const exeName = process.platform === "win32" ? "tinux-launcher.exe" : "tinux-lau
 const root = path.resolve(__dirname, "..", "..");
 const bin = path.join(root, "target", "release", exeName);
 const args = process.argv.slice(2);
+const WINDOWS_OWN_CONSOLE_ARG = "--tinux-own-console";
 
 if (args[0] === "update" || args[0] === "--update") {
   if (fs.existsSync(bin)) {
@@ -92,16 +93,22 @@ function buildRelease() {
 }
 
 function spawnDetachedWindow() {
-  try {
-    const child = spawn(bin, [], {
-      detached: true,
+  const result = spawnSync("cmd.exe", [
+    "/d",
+    "/c",
+    "start",
+    "Tinux Launcher",
+    "/D",
+    path.dirname(bin),
+    bin,
+    WINDOWS_OWN_CONSOLE_ARG,
+  ], {
       stdio: "ignore",
-      windowsHide: false,
-    });
-    child.unref();
-    return true;
-  } catch (error) {
-    console.error(`Failed to open Tinux Launcher: ${error.message}`);
+      windowsHide: true,
+  });
+  if (result.error) {
+    console.error(`Failed to open Tinux Launcher: ${result.error.message}`);
     return false;
   }
+  return result.status === 0;
 }
