@@ -8,10 +8,7 @@ const GITHUB_SPEC = "github:tinuxongit/tinux-launcher";
 const exeName = process.platform === "win32" ? "tinux-launcher.exe" : "tinux-launcher";
 const root = path.resolve(__dirname, "..", "..");
 const bin = path.join(root, "target", "release", exeName);
-const icon = path.join(root, "assets", "tinux-icon.ico");
 const args = process.argv.slice(2);
-const WINDOWS_OWN_CONSOLE_ARG = "--tinux-own-console";
-const WINDOWS_TERMINAL_PROFILE = "Tinux Launcher";
 
 if (args[0] === "update" || args[0] === "--update") {
   if (installBinary(["--update"])) {
@@ -45,13 +42,6 @@ if (!fs.existsSync(bin)) {
   if (!installBinary() && !buildRelease()) {
     process.exit(1);
   }
-}
-
-if (process.platform === "win32" && args.length === 0 && !process.env.TINUX_INLINE) {
-  if (spawnDetachedWindow()) {
-    process.exit(0);
-  }
-  process.exit(1);
 }
 
 const result = spawnSync(bin, args, {
@@ -94,120 +84,4 @@ function buildRelease() {
     return false;
   }
   return true;
-}
-
-function spawnDetachedWindow() {
-  if (installWindowsTerminalProfile()) {
-    const wt = spawnSync(
-      "wt.exe",
-      [
-        "-w",
-        "new",
-        "new-tab",
-        "-p",
-        WINDOWS_TERMINAL_PROFILE,
-        "--title",
-        WINDOWS_TERMINAL_PROFILE,
-        "--suppressApplicationTitle",
-        "--startingDirectory",
-        path.dirname(bin),
-        bin,
-        WINDOWS_OWN_CONSOLE_ARG,
-      ],
-      {
-        stdio: "ignore",
-        windowsHide: false,
-      },
-    );
-    if (!wt.error && wt.status === 0) {
-      return true;
-    }
-  }
-
-  const wt = spawnSync(
-    "wt.exe",
-    [
-      "-w",
-      "new",
-      "new-tab",
-      "--title",
-      WINDOWS_TERMINAL_PROFILE,
-      "--suppressApplicationTitle",
-      "--startingDirectory",
-      path.dirname(bin),
-      bin,
-      WINDOWS_OWN_CONSOLE_ARG,
-    ],
-    {
-      stdio: "ignore",
-      windowsHide: false,
-    },
-  );
-  if (!wt.error && wt.status === 0) {
-    return true;
-  }
-
-  const result = spawnSync(
-    "cmd.exe",
-    [
-      "/d",
-      "/c",
-      "start",
-      "Tinux Launcher",
-      "/D",
-      path.dirname(bin),
-      bin,
-      WINDOWS_OWN_CONSOLE_ARG,
-    ],
-    {
-      stdio: "ignore",
-      windowsHide: true,
-    },
-  );
-  if (result.error) {
-    console.error(`Failed to open Tinux Launcher: ${result.error.message}`);
-    return false;
-  }
-  return result.status === 0;
-}
-
-function installWindowsTerminalProfile() {
-  if (!process.env.LOCALAPPDATA || !fs.existsSync(icon)) {
-    return false;
-  }
-  try {
-    const dir = path.join(
-      process.env.LOCALAPPDATA,
-      "Microsoft",
-      "Windows Terminal",
-      "Fragments",
-      "TinuxLauncher",
-    );
-    fs.mkdirSync(dir, { recursive: true });
-    const profileIcon = path.join(dir, "tinux-icon.ico");
-    fs.copyFileSync(icon, profileIcon);
-    const fragment = {
-      profiles: [
-        {
-          guid: "{8f5d7c45-c75f-4c5d-a151-8e3b6a19f1a5}",
-          name: WINDOWS_TERMINAL_PROFILE,
-          commandline: `${quoteWindowsArg(bin)} ${WINDOWS_OWN_CONSOLE_ARG}`,
-          startingDirectory: path.dirname(bin),
-          icon: profileIcon,
-          suppressApplicationTitle: true,
-        },
-      ],
-    };
-    fs.writeFileSync(
-      path.join(dir, "tinux-launcher.json"),
-      `${JSON.stringify(fragment, null, 2)}\n`,
-    );
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-function quoteWindowsArg(value) {
-  return `"${String(value).replace(/"/g, '\\"')}"`;
 }
