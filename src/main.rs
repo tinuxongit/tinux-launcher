@@ -151,7 +151,7 @@ fn open_with_windows_terminal(exe: &std::path::Path) -> Result<bool> {
 fn spawn_windows_terminal(exe: &std::path::Path, use_profile: bool) -> Result<bool> {
     let starting_directory = exe.parent().unwrap_or_else(|| std::path::Path::new("."));
     let mut cmd = std::process::Command::new("wt.exe");
-    cmd.args(["-w", "-1", "new-tab"]);
+    cmd.args(["-w", "new", "new-tab"]);
     if use_profile {
         cmd.args(["-p", APP_TITLE]);
     }

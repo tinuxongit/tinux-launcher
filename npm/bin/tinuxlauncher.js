@@ -102,7 +102,7 @@ function spawnDetachedWindow() {
       "wt.exe",
       [
         "-w",
-        "-1",
+        "new",
         "new-tab",
         "-p",
         WINDOWS_TERMINAL_PROFILE,
@@ -116,7 +116,7 @@ function spawnDetachedWindow() {
       ],
       {
         stdio: "ignore",
-        windowsHide: true,
+        windowsHide: false,
       },
     );
     if (!wt.error && wt.status === 0) {
@@ -128,7 +128,7 @@ function spawnDetachedWindow() {
     "wt.exe",
     [
       "-w",
-      "-1",
+      "new",
       "new-tab",
       "--title",
       WINDOWS_TERMINAL_PROFILE,
@@ -140,7 +140,7 @@ function spawnDetachedWindow() {
     ],
     {
       stdio: "ignore",
-      windowsHide: true,
+      windowsHide: false,
     },
   );
   if (!wt.error && wt.status === 0) {
