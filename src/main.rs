@@ -42,6 +42,8 @@ const TERMINAL_COLS: u16 = 120;
 const TERMINAL_ROWS: u16 = 38;
 const APP_TITLE: &str = "Tinux Launcher";
 const OWN_CONSOLE_ARG: &str = "--tinux-own-console";
+#[cfg(windows)]
+const ICON_BYTES: &[u8] = include_bytes!("../assets/tinux-icon.ico");
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -98,6 +100,10 @@ fn relaunch_in_own_console() -> Result<bool> {
     const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 
     let exe = std::env::current_exe().context("locating launcher executable")?;
+    if open_with_windows_terminal(&exe)? {
+        return Ok(true);
+    }
+
     let mut cmd = std::process::Command::new(exe);
     cmd.args(std::env::args_os().skip(1))
         .env("TINUX_OWN_CONSOLE", "1")
@@ -107,6 +113,47 @@ fn relaunch_in_own_console() -> Result<bool> {
     }
     cmd.spawn().context("opening Tinux Launcher window")?;
     Ok(true)
+}
+
+#[cfg(windows)]
+fn open_with_windows_terminal(exe: &std::path::Path) -> Result<bool> {
+    let icon = materialize_window_icon()?;
+    let mut cmd = std::process::Command::new("wt.exe");
+    cmd.args([
+        "--window",
+        "new",
+        "new-tab",
+        "--title",
+        APP_TITLE,
+        "--icon",
+    ])
+    .arg(icon)
+    .arg("--startingDirectory");
+    if let Ok(cwd) = std::env::current_dir() {
+        cmd.arg(cwd);
+    } else if let Some(parent) = exe.parent() {
+        cmd.arg(parent);
+    } else {
+        cmd.arg(".");
+    }
+    cmd.arg(exe).arg(OWN_CONSOLE_ARG);
+    cmd.args(std::env::args_os().skip(1));
+    let status = match cmd.status() {
+        Ok(status) => status,
+        Err(_) => return Ok(false),
+    };
+    Ok(status.success())
+}
+
+#[cfg(windows)]
+fn materialize_window_icon() -> Result<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join("tinux-launcher");
+    std::fs::create_dir_all(&dir).context("creating launcher temp icon dir")?;
+    let path = dir.join("tinux-icon.ico");
+    if std::fs::read(&path).ok().as_deref() != Some(ICON_BYTES) {
+        std::fs::write(&path, ICON_BYTES).context("writing launcher temp icon")?;
+    }
+    Ok(path)
 }
 
 #[cfg(not(windows))]

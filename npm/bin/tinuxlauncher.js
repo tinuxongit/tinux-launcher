@@ -8,6 +8,7 @@ const GITHUB_SPEC = "github:tinuxongit/tinux-launcher";
 const exeName = process.platform === "win32" ? "tinux-launcher.exe" : "tinux-launcher";
 const root = path.resolve(__dirname, "..", "..");
 const bin = path.join(root, "target", "release", exeName);
+const icon = path.join(root, "assets", "tinux-icon.ico");
 const args = process.argv.slice(2);
 const WINDOWS_OWN_CONSOLE_ARG = "--tinux-own-console";
 
@@ -93,19 +94,49 @@ function buildRelease() {
 }
 
 function spawnDetachedWindow() {
-  const result = spawnSync("cmd.exe", [
-    "/d",
-    "/c",
-    "start",
-    "Tinux Launcher",
-    "/D",
-    path.dirname(bin),
-    bin,
-    WINDOWS_OWN_CONSOLE_ARG,
-  ], {
+  if (fs.existsSync(icon)) {
+    const wt = spawnSync(
+      "wt.exe",
+      [
+        "--window",
+        "new",
+        "new-tab",
+        "--title",
+        "Tinux Launcher",
+        "--icon",
+        icon,
+        "--startingDirectory",
+        path.dirname(bin),
+        bin,
+        WINDOWS_OWN_CONSOLE_ARG,
+      ],
+      {
+        stdio: "ignore",
+        windowsHide: true,
+      },
+    );
+    if (!wt.error && wt.status === 0) {
+      return true;
+    }
+  }
+
+  const result = spawnSync(
+    "cmd.exe",
+    [
+      "/d",
+      "/c",
+      "start",
+      "Tinux Launcher",
+      "/D",
+      path.dirname(bin),
+      bin,
+      WINDOWS_OWN_CONSOLE_ARG,
+    ],
+    {
       stdio: "ignore",
       windowsHide: true,
-  });
+    },
+  );
   if (result.error) {
     console.error(`Failed to open Tinux Launcher: ${result.error.message}`);
     return false;
