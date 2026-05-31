@@ -1,6 +1,6 @@
 {
   "name": "tinuxlauncher",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": "Terminal Minecraft Java launcher",
   "license": "MIT",
   "repository": {
@@ -20,6 +20,7 @@
     "postinstall": "node npm/scripts/postinstall.js"
   },
   "files": [
+    ".cargo",
     "assets",
     "build.rs",
     "Cargo.toml",
