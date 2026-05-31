@@ -91,6 +91,21 @@ pub async fn prepare_fabric_version(
     mc_version: &str,
     loader_version: &str,
 ) -> Result<String> {
+    prepare_fabric_version_as(client, paths, manifest, mc_version, loader_version, None).await
+}
+
+/// Like `prepare_fabric_version`, but writes the merged JSON under `out_id`
+/// instead of Fabric's natural `fabric-loader-<loader>-<mc>` id. Used by the
+/// modpack installer so each modpack becomes its own self-contained instance
+/// (`out_id = modpack-<slug>-<mc>`). `out_id = None` keeps the standard id.
+pub async fn prepare_fabric_version_as(
+    client: &reqwest::Client,
+    paths: &Paths,
+    manifest: &VersionManifest,
+    mc_version: &str,
+    loader_version: &str,
+    out_id: Option<&str>,
+) -> Result<String> {
     let vanilla = manifest
         .versions
         .iter()
@@ -113,8 +128,9 @@ pub async fn prepare_fabric_version(
         .await
         .context("parsing Fabric profile JSON")?;
 
+    let version_id = out_id.unwrap_or(&profile.id).to_string();
     let mut merged = vanilla_details.clone();
-    merged.id = profile.id.clone();
+    merged.id = version_id.clone();
     merged.main_class = profile.main_class.clone();
 
     let mut new_libs: Vec<Library> = profile
@@ -143,14 +159,14 @@ pub async fn prepare_fabric_version(
         }
     }
 
-    let out_path = paths.version_json(&profile.id);
+    let out_path = paths.version_json(&version_id);
     ensure_parent(&out_path)?;
     let bytes = serde_json::to_vec_pretty(&merged).context("serializing merged Fabric JSON")?;
     tokio::fs::write(&out_path, bytes)
         .await
         .with_context(|| format!("writing {}", out_path.display()))?;
 
-    Ok(profile.id)
+    Ok(version_id)
 }
 
 fn convert_library(lib: FabricLibrary) -> Option<Library> {

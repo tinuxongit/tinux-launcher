@@ -9,6 +9,7 @@ mod launch;
 mod logging;
 mod manifest;
 mod meta;
+mod modpack;
 mod modrinth;
 mod news;
 mod paths;
@@ -264,6 +265,36 @@ fn handle_key(app: &mut App, k: KeyEvent) {
         return;
     }
 
+    if app.focus == Focus::VersionPicker {
+        match k.code {
+            KeyCode::Esc => {
+                app.focus = Focus::None;
+                app.version_picker_open = false;
+            }
+            KeyCode::Enter => {
+                // Pick the first version matching the query, if any.
+                if let Some(v) = app.picker_versions().first().map(|s| s.to_string()) {
+                    app.modpack_browse_version = Some(v);
+                    app.version_picker_open = false;
+                    app.focus = Focus::None;
+                    trigger_mod_search(app, false);
+                }
+            }
+            KeyCode::Backspace => {
+                app.version_picker_query.pop();
+                app.version_picker_offset = 0;
+            }
+            KeyCode::Char(c) if !c.is_control() => {
+                if app.version_picker_query.chars().count() < 32 {
+                    app.version_picker_query.push(c);
+                    app.version_picker_offset = 0;
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     if app.focus == Focus::JavaPath {
         match k.code {
             KeyCode::Esc | KeyCode::Enter => {
@@ -324,11 +355,18 @@ fn handle_key(app: &mut App, k: KeyEvent) {
         KeyCode::Esc if update_modal_visible(app) => {
             app.update_modal_dismissed = true;
         }
+        KeyCode::Esc if app.version_picker_open => {
+            app.version_picker_open = false;
+            app.focus = Focus::None;
+        }
         KeyCode::Esc if app.filters_popup_open => {
             app.filters_popup_open = false;
         }
         KeyCode::Esc if app.mod_browser_open => {
             app.mod_browser_open = false;
+        }
+        KeyCode::Esc if app.modpack_browser_open => {
+            app.modpack_browser_open = false;
         }
         KeyCode::Esc if app.viewing_news.is_some() => {
             app.viewing_news = None;
@@ -415,9 +453,11 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
             }
         }
         MouseEventKind::ScrollUp => {
-            if app.filters_popup_open {
+            if app.version_picker_open {
+                app.version_picker_offset = app.version_picker_offset.saturating_sub(2);
+            } else if app.filters_popup_open {
                 app.filters_scroll = app.filters_scroll.saturating_sub(2);
-            } else if app.mod_browser_open {
+            } else if app.mod_browser_open || app.modpack_browser_open {
                 app.mod_search_offset = app.mod_search_offset.saturating_sub(2);
             } else if app.viewing_news.is_some() {
                 app.article_offset = app.article_offset.saturating_sub(2);
@@ -431,9 +471,11 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
             }
         }
         MouseEventKind::ScrollDown => {
-            if app.filters_popup_open {
+            if app.version_picker_open {
+                app.version_picker_offset = app.version_picker_offset.saturating_add(2);
+            } else if app.filters_popup_open {
                 app.filters_scroll = app.filters_scroll.saturating_add(2);
-            } else if app.mod_browser_open {
+            } else if app.mod_browser_open || app.modpack_browser_open {
                 app.mod_search_offset = app.mod_search_offset.saturating_add(2);
             } else if app.viewing_news.is_some() {
                 app.article_offset = app.article_offset.saturating_add(2);
@@ -453,7 +495,11 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
 fn is_scrollbar_hit(hit: Hit) -> bool {
     matches!(
         hit,
-        Hit::NewsScrollbar | Hit::ArticleScrollbar | Hit::VersionsScrollbar | Hit::LogsScrollbar
+        Hit::NewsScrollbar
+            | Hit::ArticleScrollbar
+            | Hit::VersionsScrollbar
+            | Hit::LogsScrollbar
+            | Hit::VersionPickerScrollbar
     )
 }
 
@@ -474,6 +520,13 @@ fn scroll_to_mouse(app: &mut App, hit: Hit, rect: Rect, row: u16) {
             let visible = rect.height as usize;
             if total > visible {
                 app.list_offset = pos_for_range(pos, total - visible);
+            }
+        }
+        Hit::VersionPickerScrollbar => {
+            let total = app.picker_versions().len();
+            let visible = rect.height as usize;
+            if total > visible {
+                app.version_picker_offset = pos_for_range(pos, total - visible);
             }
         }
         Hit::LogsScrollbar => {
@@ -537,6 +590,10 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             app.switch_filter(app::VersionFilter::Modded);
             config::save_active_filter(app.filter.as_str());
         }
+        Hit::FilterModpacks => {
+            app.switch_filter(app::VersionFilter::Modpacks);
+            config::save_active_filter(app.filter.as_str());
+        }
         Hit::ToggleShowSnapshots => {
             app.show_snapshots = !app.show_snapshots;
             app.list_offset = 0;
@@ -551,6 +608,7 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             if app.selected_modded_installed() {
                 app.mod_browser_open = true;
                 app.browser_kind = app::ContentKind::Mods;
+                app.browser_tab_offset = 0;
                 app.reload_meta();
                 app.refresh_installed_mods();
                 trigger_mod_search(app, false);
@@ -564,11 +622,60 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         Hit::CloseModBrowser => {
             app.mod_browser_open = false;
         }
+        Hit::OpenModpackBrowser => {
+            app.modpack_browser_open = true;
+            app.browser_kind = app::ContentKind::Modpacks;
+            // The modpack browser has no "Installed only" toggle; make sure a
+            // leftover filter from the Content browser doesn't hide everything.
+            app.installed_filter_only = false;
+            app.mod_search_query.clear();
+            app.mod_search_results.clear();
+            app.mod_search_offset = 0;
+            app.mod_search_api_offset = 0;
+            app.mod_search_total = 0;
+            app.selected_categories.clear();
+            app.focus = Focus::None;
+            if app.modpack_browse_version.is_some() {
+                trigger_mod_search(app, false);
+            } else {
+                // Ask for a version up front — modpacks must target one.
+                open_version_picker(app);
+            }
+        }
+        Hit::CloseModpackBrowser => {
+            app.modpack_browser_open = false;
+            app.version_picker_open = false;
+            app.filters_popup_open = false;
+            app.focus = Focus::None;
+        }
+        Hit::OpenVersionPicker => {
+            open_version_picker(app);
+        }
+        Hit::CloseVersionPicker => {
+            app.version_picker_open = false;
+            app.focus = Focus::None;
+        }
+        Hit::VersionPickerField => {
+            app.focus = Focus::VersionPicker;
+        }
+        Hit::VersionPickerRow(i) => {
+            let v = app.picker_versions().get(i).map(|s| s.to_string());
+            if let Some(v) = v {
+                app.modpack_browse_version = Some(v);
+                app.version_picker_open = false;
+                app.focus = Focus::None;
+                trigger_mod_search(app, false);
+            }
+        }
         Hit::ModSearchField => {
             app.focus = Focus::ModSearch;
         }
         Hit::ModResult(i) => {
-            trigger_mod_install(app, i);
+            if app.browser_kind == app::ContentKind::Modpacks {
+                trigger_modpack_install(app, i);
+            } else {
+                trigger_mod_install(app, i);
+            }
         }
         Hit::RemoveModButton(i) => {
             trigger_mod_remove(app, i);
@@ -585,6 +692,18 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             }
         }
         Hit::BrowserTabResourcePacks => switch_browser_tab(app, app::ContentKind::ResourcePacks),
+        Hit::BrowserTabDatapacks => switch_browser_tab(app, app::ContentKind::Datapacks),
+        Hit::BrowserTabModpacks => switch_browser_tab(app, app::ContentKind::Modpacks),
+        Hit::BrowserTabsScrollLeft => {
+            app.browser_tab_offset = app.browser_tab_offset.saturating_sub(1);
+        }
+        Hit::BrowserTabsScrollRight => {
+            let max = app::ContentKind::ALL.len().saturating_sub(1);
+            app.browser_tab_offset = (app.browser_tab_offset + 1).min(max);
+        }
+        Hit::RemoveModpack(i) => {
+            trigger_remove_modpack(app, i);
+        }
         Hit::ShowMoreModsButton => {
             trigger_mod_search(app, true);
         }
@@ -706,10 +825,18 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             app.status_message = "Opened releases page".into();
         }
         Hit::VersionRow(i) => {
-            let visible = app.visible_versions();
-            if let Some(v) = visible.get(i) {
-                let id = v.id.clone();
+            // In the Modpacks filter the rows come from the registry, not the
+            // Mojang manifest.
+            let id = if app.filter == app::VersionFilter::Modpacks {
+                app.modpack_instances.get(i).map(|m| m.id.clone())
+            } else {
+                app.visible_versions().get(i).map(|v| v.id.clone())
+            };
+            if let Some(id) = id {
                 app.selected_version = Some(id.clone());
+                // The clicked row's tab is the selection's kind, and it sticks
+                // even when the user flips to another filter tab.
+                app.selected_kind = app.filter;
                 app.selections_by_filter
                     .insert(app.filter, Some(id.clone()));
                 config::save_selection(app.filter.as_str(), &id);
@@ -767,7 +894,11 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
                 app::spawn_article_fetch(client, tx, i, entry);
             }
         }
-        Hit::NewsScrollbar | Hit::ArticleScrollbar | Hit::VersionsScrollbar | Hit::LogsScrollbar => {}
+        Hit::NewsScrollbar
+        | Hit::ArticleScrollbar
+        | Hit::VersionsScrollbar
+        | Hit::LogsScrollbar
+        | Hit::VersionPickerScrollbar => {}
         Hit::CloseArticle => {
             app.viewing_news = None;
             app.article = None;
@@ -812,6 +943,14 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         }
         Hit::OpenMinecraftFolder => {
             let dir = app.paths.vanilla_minecraft.clone();
+            open_path(&dir);
+            app.status_message = format!("Opened {}", dir.display());
+        }
+        Hit::OpenContentFolder => {
+            let Some(dir) = app.current_content_dir(app.browser_kind) else {
+                app.status_message = "Pick a version first".into();
+                return;
+            };
             open_path(&dir);
             app.status_message = format!("Opened {}", dir.display());
         }
@@ -860,7 +999,12 @@ fn trigger_install(app: &mut App) {
         app.status_message = "Install already running".into();
         return;
     }
-    if app.filter == app::VersionFilter::Modded {
+    if app.selected_kind == app::VersionFilter::Modpacks {
+        // Modpacks are installed from the modpack browser, not here.
+        app.status_message = "Install modpacks from Versions ▸ Modpacks ▸ Browse Modpacks".into();
+        return;
+    }
+    if app.selected_kind == app::VersionFilter::Modded {
         trigger_install_fabric(app);
         return;
     }
@@ -920,11 +1064,12 @@ fn trigger_launch(app: &mut App) {
         },
         AccountMode::Offline => launch::LaunchOptions::offline(app.offline_name.clone()),
     };
-    let target_id = if app.filter == app::VersionFilter::Modded {
+    let target_id = if app.selected_kind == app::VersionFilter::Releases {
+        app.selected_version.clone().unwrap_or_default()
+    } else {
+        // Modded derives a fabric id; modpacks ARE their own id.
         app.selected_modded_id()
             .unwrap_or_else(|| app.selected_version.clone().unwrap_or_default())
-    } else {
-        app.selected_version.clone().unwrap_or_default()
     };
     let java_override = app
         .java_path_override_for(&target_id)
@@ -937,7 +1082,7 @@ fn trigger_launch(app: &mut App) {
     let paths_clone = clone_paths(&app.paths);
     let tx = app.worker_tx.clone();
 
-    if app.filter == app::VersionFilter::Modded {
+    if app.selected_kind == app::VersionFilter::Modded {
         let Some(mc) = app.selected_version.clone() else {
             app.status_message = "Pick a Minecraft version first".into();
             return;
@@ -950,7 +1095,7 @@ fn trigger_launch(app: &mut App) {
             app.status_message = "Version manifest not loaded yet".into();
             return;
         };
-        config::save_last_played(&mc, app.filter.as_str());
+        config::save_last_played(&mc, app.selected_kind.as_str());
         tokio::spawn(async move {
             worker::do_install_and_launch_fabric(
                 client, paths_clone, manifest, mc, loader, java, opts, tx,
@@ -960,11 +1105,33 @@ fn trigger_launch(app: &mut App) {
         return;
     }
 
+    if app.selected_kind == app::VersionFilter::Modpacks {
+        // The modpack instance is already a self-contained installed version;
+        // launch it like any other (empty url → install_version re-reads the
+        // cached JSON and just verifies).
+        let Some(id) = app.selected_version.clone() else {
+            app.status_message = "Pick a modpack first (Versions ▸ Modpacks)".into();
+            return;
+        };
+        config::save_last_played(&id, app.selected_kind.as_str());
+        let entry = manifest::ManifestVersion {
+            id,
+            kind: manifest::VersionKind::Release,
+            url: String::new(),
+            sha1: String::new(),
+            release_time: String::new(),
+        };
+        tokio::spawn(async move {
+            worker::do_install_and_launch(client, paths_clone, entry, java, opts, tx).await;
+        });
+        return;
+    }
+
     let Some(entry) = app.selected_manifest_entry() else {
         app.status_message = "Pick a version first (Versions tab)".into();
         return;
     };
-    config::save_last_played(&entry.id, app.filter.as_str());
+    config::save_last_played(&entry.id, app.selected_kind.as_str());
     tokio::spawn(async move {
         worker::do_install_and_launch(client, paths_clone, entry, java, opts, tx).await;
     });
@@ -990,9 +1157,26 @@ fn trigger_install_update(app: &mut App) {
 }
 
 fn trigger_mod_search(app: &mut App, append: bool) {
-    let Some(mc) = app.selected_version.clone() else {
-        app.status_message = "Pick a Minecraft version first".into();
-        return;
+    // The dedicated modpack browser requires the user to choose a version
+    // before it searches, independent of any selected instance.
+    let mc = if app.modpack_browser_open {
+        match app.modpack_browse_version.clone() {
+            Some(v) => v,
+            None => {
+                app.mod_search_results.clear();
+                app.mod_search_total = 0;
+                app.status_message = "Select a Minecraft version to browse modpacks".into();
+                return;
+            }
+        }
+    } else {
+        match app.browse_mc_version() {
+            Some(v) => v,
+            None => {
+                app.status_message = "Pick a Minecraft version first".into();
+                return;
+            }
+        }
     };
     let query = app.mod_search_query.trim().to_string();
     let loader = app.loader.modrinth_key().to_string();
@@ -1087,6 +1271,58 @@ fn trigger_mod_install(app: &mut App, idx: usize) {
             }
         }
     });
+}
+
+fn trigger_modpack_install(app: &mut App, idx: usize) {
+    let Some(hit) = app.mod_search_results.get(idx).cloned() else {
+        return;
+    };
+    if app.modpack_installing.is_some() {
+        app.status_message = "A modpack install is already running".into();
+        return;
+    }
+    let Some(mc) = app
+        .modpack_browse_version
+        .clone()
+        .or_else(|| app.browse_mc_version())
+    else {
+        app.status_message = "Pick a Minecraft version first".into();
+        return;
+    };
+    let Some(manifest) = app.manifest.clone() else {
+        app.status_message = "Version manifest not loaded yet".into();
+        return;
+    };
+    let client = app.client.clone();
+    let paths_clone = clone_paths(&app.paths);
+    let tx = app.worker_tx.clone();
+    let project_id = hit.project_id.clone();
+    let name = hit.title.clone();
+    // Store the project id so the result row's download cue matches it.
+    app.modpack_installing = Some(project_id.clone());
+    let _ = tx.send(event::WorkerMsg::ModpackInstallStarted(name.clone()));
+    app.status_message = format!("Installing modpack: {name}");
+    tokio::spawn(async move {
+        worker::do_install_modpack(client, paths_clone, manifest, mc, project_id, name, tx).await;
+    });
+}
+
+fn trigger_remove_modpack(app: &mut App, idx: usize) {
+    let Some(instance) = app.modpack_instances.get(idx).cloned() else {
+        return;
+    };
+    let id = instance.id.clone();
+    // Best-effort file cleanup, then drop the registry entry.
+    let _ = std::fs::remove_dir_all(app.paths.instances.join(&id));
+    let _ = std::fs::remove_dir_all(app.paths.versions.join(&id));
+    config::remove_modpack(&id);
+    app.modpack_instances = config::load_modpacks();
+    if app.selected_version.as_deref() == Some(id.as_str()) {
+        app.selected_version = app.modpack_instances.first().map(|m| m.id.clone());
+        app.reload_meta();
+        app.refresh_installed_mods();
+    }
+    app.status_message = format!("Removed modpack: {}", instance.name);
 }
 
 fn trigger_mod_remove(app: &mut App, idx: usize) {
@@ -1491,6 +1727,13 @@ fn trigger_verify_integrity(app: &mut App) {
     tokio::spawn(async move {
         worker::do_verify_integrity(client, paths_clone, entry, tx).await;
     });
+}
+
+fn open_version_picker(app: &mut App) {
+    app.version_picker_open = true;
+    app.version_picker_query.clear();
+    app.version_picker_offset = 0;
+    app.focus = Focus::VersionPicker;
 }
 
 fn switch_browser_tab(app: &mut App, kind: app::ContentKind) {

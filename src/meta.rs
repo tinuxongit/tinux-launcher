@@ -13,6 +13,12 @@ pub struct InstanceMeta {
     pub shaders: HashMap<String, String>,
     #[serde(default)]
     pub resourcepacks: HashMap<String, String>,
+    #[serde(default)]
+    pub datapacks: HashMap<String, String>,
+    // Present only to keep ContentKind matches total; modpacks aren't tracked
+    // as per-instance files (installing one creates a separate instance).
+    #[serde(default)]
+    pub modpacks: HashMap<String, String>,
 }
 
 impl InstanceMeta {
@@ -37,6 +43,8 @@ impl InstanceMeta {
             ContentKind::Mods => &mut self.mods,
             ContentKind::Shaders => &mut self.shaders,
             ContentKind::ResourcePacks => &mut self.resourcepacks,
+            ContentKind::Datapacks => &mut self.datapacks,
+            ContentKind::Modpacks => &mut self.modpacks,
         }
     }
 
@@ -45,6 +53,8 @@ impl InstanceMeta {
             ContentKind::Mods => &self.mods,
             ContentKind::Shaders => &self.shaders,
             ContentKind::ResourcePacks => &self.resourcepacks,
+            ContentKind::Datapacks => &self.datapacks,
+            ContentKind::Modpacks => &self.modpacks,
         }
     }
 

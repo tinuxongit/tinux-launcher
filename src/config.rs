@@ -44,6 +44,56 @@ impl Config {
     }
 }
 
+/// A modpack installed as its own launchable instance. `id` is both the
+/// version id (`versions/<id>/`) and the instance dir (`instances/<id>/`).
+/// The registry lives in `modpacks.json` next to `config.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModpackInstance {
+    pub id: String,
+    pub name: String,
+    pub mc_version: String,
+    #[serde(default)]
+    pub modpack_version: String,
+    #[serde(default)]
+    pub project_id: String,
+}
+
+fn modpacks_path() -> Option<PathBuf> {
+    directories::ProjectDirs::from("dev", "tinux", "TinuxLauncher")
+        .map(|d| d.data_dir().join("modpacks.json"))
+}
+
+pub fn load_modpacks() -> Vec<ModpackInstance> {
+    let Some(p) = modpacks_path() else { return Vec::new() };
+    std::fs::read(&p)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn save_modpacks(list: &[ModpackInstance]) {
+    let Some(p) = modpacks_path() else { return };
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_vec_pretty(list) {
+        let _ = std::fs::write(&p, json);
+    }
+}
+
+pub fn add_modpack(entry: ModpackInstance) {
+    let mut list = load_modpacks();
+    list.retain(|e| e.id != entry.id); // re-install replaces the old record
+    list.push(entry);
+    save_modpacks(&list);
+}
+
+pub fn remove_modpack(id: &str) {
+    let mut list = load_modpacks();
+    list.retain(|e| e.id != id);
+    save_modpacks(&list);
+}
+
 pub fn path() -> Option<PathBuf> {
     directories::ProjectDirs::from("dev", "tinux", "TinuxLauncher")
         .map(|d| d.data_dir().join("config.json"))

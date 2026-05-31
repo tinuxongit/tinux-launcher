@@ -6,6 +6,7 @@ use crate::launch::{self, LaunchOptions};
 use crate::manifest::{ManifestVersion, VersionKind, VersionManifest};
 use crate::paths::Paths;
 use crate::version::VersionDetails;
+use sha1::{Digest, Sha1};
 use std::sync::Arc;
 use tokio::sync::mpsc::{self, UnboundedSender};
 
@@ -260,6 +261,142 @@ pub async fn do_install_and_launch_fabric(
         release_time: String::new(),
     };
     do_install_and_launch(client, paths, entry, java, opts, tx).await;
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn do_install_modpack(
+    client: reqwest::Client,
+    paths: Paths,
+    manifest: Arc<VersionManifest>,
+    browse_mc_version: String,
+    project_id: String,
+    name: String,
+    tx: UnboundedSender<WorkerMsg>,
+) {
+    match install_modpack_inner(
+        &client,
+        &paths,
+        &manifest,
+        &browse_mc_version,
+        &project_id,
+        &name,
+        &tx,
+    )
+    .await
+    {
+        Ok(instance) => {
+            let _ = tx.send(WorkerMsg::ModpackInstallDone(instance));
+        }
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::ModpackInstallFailed(format!("{e:#}")));
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn install_modpack_inner(
+    client: &reqwest::Client,
+    paths: &Paths,
+    manifest: &VersionManifest,
+    browse_mc_version: &str,
+    project_id: &str,
+    name: &str,
+    tx: &UnboundedSender<WorkerMsg>,
+) -> anyhow::Result<crate::config::ModpackInstance> {
+    let progress = |done: u64, total: u64, what: &str| {
+        let _ = tx.send(WorkerMsg::ModpackInstallProgress {
+            done,
+            total,
+            what: what.to_string(),
+        });
+    };
+
+    // 1. Resolve and download the .mrpack archive (small — just an index +
+    //    overrides; the mods themselves are fetched by URL afterwards).
+    progress(0, 0, "Resolving modpack");
+    let file = crate::modrinth::fetch_modpack_file(client, project_id, browse_mc_version).await?;
+    progress(0, 0, "Downloading modpack");
+    let bytes = client
+        .get(&file.url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?
+        .to_vec();
+    if let Some(expected) = file.sha1.as_deref() {
+        let got = hex::encode(Sha1::digest(&bytes));
+        if got != expected {
+            anyhow::bail!(
+                "hash mismatch for modpack archive {}: got {got}, want {expected}",
+                file.filename
+            );
+        }
+    }
+
+    // 2. Parse + Fabric-only gate.
+    let index = crate::modpack::parse_mrpack(&bytes)?;
+    let req = crate::modpack::loader_requirement(&index)?;
+    let mc = req.mc_version;
+    let fabric_loader = req.loader_version;
+    let id = crate::modpack::instance_id(project_id, &mc);
+    let display_name = if name.trim().is_empty() {
+        index.name.clone()
+    } else {
+        name.to_string()
+    };
+
+    // 3. Build + install the Fabric runtime under this modpack's own id.
+    progress(0, 0, &format!("Installing Fabric for {mc}"));
+    crate::fabric::prepare_fabric_version_as(
+        client,
+        paths,
+        manifest,
+        &mc,
+        &fabric_loader,
+        Some(id.as_str()),
+    )
+    .await?;
+    let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
+    let app_tx = tx.clone();
+    let forwarder = tokio::spawn(async move {
+        while let Some(ev) = prog_rx.recv().await {
+            let _ = app_tx.send(WorkerMsg::ModpackInstallProgress {
+                done: ev.done,
+                total: ev.total,
+                what: ev.what,
+            });
+        }
+    });
+    let runtime = install_version(client, paths, &id, "", &prog_tx).await;
+    drop(prog_tx);
+    let _ = forwarder.await;
+    runtime?;
+
+    // 4. Download the modpack's files into its instance dir.
+    let instance_dir = paths.instances.join(&id);
+    crate::modpack::install_files(client, &index, &instance_dir, |done, total, what| {
+        let _ = tx.send(WorkerMsg::ModpackInstallProgress { done, total, what });
+    })
+    .await?;
+
+    // 5. Apply overrides (sync ZIP IO — off the async runtime).
+    progress(0, 0, "Applying overrides");
+    let dir = instance_dir.clone();
+    tokio::task::spawn_blocking(move || crate::modpack::extract_overrides(&bytes, &dir))
+        .await
+        .map_err(|e| anyhow::anyhow!("override extraction panicked: {e}"))??;
+
+    // 6. Register the instance so it persists and becomes launchable.
+    let instance = crate::config::ModpackInstance {
+        id,
+        name: display_name,
+        mc_version: mc,
+        modpack_version: file.version_number,
+        project_id: project_id.to_string(),
+    };
+    crate::config::add_modpack(instance.clone());
+    Ok(instance)
 }
 
 pub async fn do_verify_integrity(

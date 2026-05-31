@@ -20,6 +20,7 @@ const LOG_CAPACITY: usize = 1000;
 pub enum VersionFilter {
     Releases,
     Modded,
+    Modpacks,
 }
 
 impl VersionFilter {
@@ -27,6 +28,7 @@ impl VersionFilter {
         match self {
             VersionFilter::Releases => "releases",
             VersionFilter::Modded => "modded",
+            VersionFilter::Modpacks => "modpacks",
         }
     }
 
@@ -34,6 +36,7 @@ impl VersionFilter {
         Some(match s {
             "releases" => VersionFilter::Releases,
             "modded" => VersionFilter::Modded,
+            "modpacks" => VersionFilter::Modpacks,
             // Legacy values from older configs map onto the new model.
             "snapshots" | "old" => VersionFilter::Releases,
             _ => return None,
@@ -47,6 +50,7 @@ impl VersionFilter {
         match self {
             VersionFilter::Releases => None,
             VersionFilter::Modded => Some("Fabric"),
+            VersionFilter::Modpacks => Some("Modpack"),
         }
     }
 }
@@ -75,13 +79,19 @@ pub enum ContentKind {
     Mods,
     Shaders,
     ResourcePacks,
+    Datapacks,
+    Modpacks,
 }
 
 impl ContentKind {
-    pub const ALL: [ContentKind; 3] = [
+    /// The tabs shown in the Content browser. Modpacks are intentionally
+    /// excluded — they get their own dedicated browser (opened from
+    /// Versions ▸ Modpacks) since installing one creates a whole instance.
+    pub const ALL: [ContentKind; 4] = [
         ContentKind::Mods,
         ContentKind::Shaders,
         ContentKind::ResourcePacks,
+        ContentKind::Datapacks,
     ];
 
     pub fn label(self) -> &'static str {
@@ -89,6 +99,8 @@ impl ContentKind {
             ContentKind::Mods => "Mods",
             ContentKind::Shaders => "Shaders",
             ContentKind::ResourcePacks => "Texture Packs",
+            ContentKind::Datapacks => "Datapacks",
+            ContentKind::Modpacks => "Modpacks",
         }
     }
 
@@ -97,6 +109,8 @@ impl ContentKind {
             ContentKind::Mods => "mod",
             ContentKind::Shaders => "shader",
             ContentKind::ResourcePacks => "resourcepack",
+            ContentKind::Datapacks => "datapack",
+            ContentKind::Modpacks => "modpack",
         }
     }
 
@@ -105,12 +119,21 @@ impl ContentKind {
             ContentKind::Mods => "mods",
             ContentKind::Shaders => "shaderpacks",
             ContentKind::ResourcePacks => "resourcepacks",
+            ContentKind::Datapacks => "datapacks",
+            ContentKind::Modpacks => "modpacks",
         }
     }
 
     /// Whether the Modrinth version-list query should filter by loader.
     pub fn uses_loader(self) -> bool {
         matches!(self, ContentKind::Mods)
+    }
+
+    /// Modpacks aren't per-instance content — installing one creates a whole
+    /// new instance — so the browser handles that tab specially (no installed
+    /// pane, no open-folder shortcut, an Install action that spawns an install).
+    pub fn is_modpack(self) -> bool {
+        matches!(self, ContentKind::Modpacks)
     }
 }
 
@@ -167,6 +190,7 @@ pub enum Focus {
     ModSearch,
     JavaPath,
     JavaPathForVersion,
+    VersionPicker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -199,12 +223,14 @@ pub struct App {
     pub manifest: Option<Arc<VersionManifest>>,
     pub manifest_error: Option<String>,
 
+    /// Which version list the Versions tab is currently showing.
     pub filter: VersionFilter,
-    /// Per-filter selection cache. When the user switches filter tabs the
-    /// current `selected_version` is parked here under the old filter's key,
-    /// and the new filter's previously-parked pick is loaded back. New
-    /// loaders (Forge, NeoForge, Quilt, ...) automatically get their own
-    /// slot just by virtue of being a new `VersionFilter` variant.
+    /// The kind of the *current selection* — set when a row is clicked, and
+    /// kept even as `filter` changes. The Play tab / launcher key off this (not
+    /// `filter`) so a selected modpack stays selected when you flip tabs.
+    pub selected_kind: VersionFilter,
+    /// Seeds the initial selection at startup (per-filter restore); not used
+    /// for live tab switching anymore.
     pub selections_by_filter: std::collections::HashMap<VersionFilter, Option<String>>,
     pub list_offset: usize,
     pub selected_version: Option<String>,
@@ -305,6 +331,24 @@ pub struct App {
 
     pub integrity_in_progress: bool,
     pub installed_filter_only: bool,
+
+    // Content-browser tab strip horizontal scroll (first visible tab index),
+    // so 5 tabs + the right-hand buttons stay usable on narrow terminals.
+    pub browser_tab_offset: usize,
+
+    // Modpacks installed as their own launchable instances (see config::ModpackInstance).
+    pub modpack_instances: Vec<crate::config::ModpackInstance>,
+    // Project id of the modpack currently downloading (drives the row cue).
+    pub modpack_installing: Option<String>,
+
+    // The dedicated modpacks-only browser (opened from Versions ▸ Modpacks),
+    // separate from the per-instance Content browser.
+    pub modpack_browser_open: bool,
+    // MC version the modpack browser filters by; None = any version.
+    pub modpack_browse_version: Option<String>,
+    pub version_picker_open: bool,
+    pub version_picker_query: String,
+    pub version_picker_offset: usize,
 }
 
 impl App {
@@ -374,6 +418,7 @@ impl App {
             manifest: None,
             manifest_error: None,
             filter: saved_filter,
+            selected_kind: saved_filter,
             list_offset: 0,
             selected_version: {
                 let from_map = cfg_opt
@@ -473,6 +518,14 @@ impl App {
             java_path_per_version: saved_java_per_version,
             integrity_in_progress: false,
             installed_filter_only: false,
+            browser_tab_offset: 0,
+            modpack_instances: crate::config::load_modpacks(),
+            modpack_installing: None,
+            modpack_browser_open: false,
+            modpack_browse_version: None,
+            version_picker_open: false,
+            version_picker_query: String::new(),
+            version_picker_offset: 0,
         }
     }
 
@@ -514,6 +567,9 @@ impl App {
             }
         };
         match self.filter {
+            // Modpacks aren't manifest versions — that list is rendered from
+            // the registry (see ui::draw_modpack_rows), so nothing here.
+            VersionFilter::Modpacks => Vec::new(),
             VersionFilter::Releases => m
                 .versions
                 .iter()
@@ -550,19 +606,46 @@ impl App {
         if self.filter == new_filter {
             return;
         }
-        self.selections_by_filter
-            .insert(self.filter, self.selected_version.clone());
-        self.selected_version = self
-            .selections_by_filter
-            .get(&new_filter)
-            .cloned()
-            .unwrap_or(None);
+        // A version (or modpack) becomes selected only by clicking its row —
+        // switching tabs never carries a selection over, so you can't end up
+        // with both a modpack and a modded version "selected" at once.
         self.filter = new_filter;
+        self.selected_version = None;
         self.list_offset = 0;
     }
 
     pub fn selected_modded_id(&self) -> Option<String> {
-        self.modded_id_for(self.selected_version.as_ref()?)
+        let sel = self.selected_version.as_ref()?;
+        // A modpack instance IS its own launchable version id; don't derive a
+        // fabric-loader id from it.
+        if sel.starts_with("modpack-") {
+            return Some(sel.clone());
+        }
+        self.modded_id_for(sel)
+    }
+
+    pub fn modpack_by_id(&self, id: &str) -> Option<&crate::config::ModpackInstance> {
+        self.modpack_instances.iter().find(|m| m.id == id)
+    }
+
+    /// Fabric-supported MC versions matching the version picker's search box.
+    pub fn picker_versions(&self) -> Vec<&String> {
+        let q = self.version_picker_query.trim().to_ascii_lowercase();
+        self.fabric_mc_versions
+            .iter()
+            .filter(|v| q.is_empty() || v.to_ascii_lowercase().contains(&q))
+            .collect()
+    }
+
+    /// The Minecraft version to filter Modrinth browsing by. Normally the
+    /// selected version itself, but a modpack instance's id isn't an MC id, so
+    /// fall back to the MC version recorded for it in the registry.
+    pub fn browse_mc_version(&self) -> Option<String> {
+        let sel = self.selected_version.as_ref()?;
+        if let Some(mp) = self.modpack_by_id(sel) {
+            return Some(mp.mc_version.clone());
+        }
+        Some(sel.clone())
     }
 
     pub fn selected_modded_installed(&self) -> bool {
@@ -693,6 +776,14 @@ impl App {
     }
 
     pub fn is_project_installed(&self, project_id: &str) -> bool {
+        // Modpacks aren't tracked in per-instance meta — a modpack is "installed"
+        // when it's in the registry, keyed by its Modrinth project id.
+        if self.browser_kind == ContentKind::Modpacks {
+            return self
+                .modpack_instances
+                .iter()
+                .any(|m| m.project_id == project_id);
+        }
         self.installed_meta.is_installed(self.browser_kind, project_id)
     }
 
@@ -705,6 +796,9 @@ impl App {
             ContentKind::Mods => &[".jar"],
             ContentKind::Shaders => &[".zip", ".jar"],
             ContentKind::ResourcePacks => &[".zip"],
+            ContentKind::Datapacks => &[".zip"],
+            // Modpacks don't live as files inside an instance.
+            ContentKind::Modpacks => &[],
         };
         let mut out: Vec<String> = std::fs::read_dir(&dir)
             .into_iter()
@@ -1064,6 +1158,39 @@ impl App {
                 self.integrity_in_progress = false;
                 self.install = None;
                 self.status_message = format!("Verify failed: {e}");
+            }
+            WorkerMsg::ModpackInstallStarted(name) => {
+                // modpack_installing (the project id) is set by the trigger; here
+                // we only surface the friendly name.
+                self.status_message = format!("Installing modpack: {name}");
+            }
+            WorkerMsg::ModpackInstallProgress { done, total, what } => {
+                self.status_message = if total > 0 {
+                    format!("{what} ({done}/{total})")
+                } else {
+                    what
+                };
+            }
+            WorkerMsg::ModpackInstallDone(instance) => {
+                self.modpack_installing = None;
+                self.modpack_instances = crate::config::load_modpacks();
+                self.status_message = format!(
+                    "Installed modpack: {} — find it under Versions ▸ Modpacks",
+                    instance.name
+                );
+                // Drop the user onto the freshly-installed instance.
+                self.mod_browser_open = false;
+                self.modpack_browser_open = false;
+                self.version_picker_open = false;
+                self.switch_filter(VersionFilter::Modpacks);
+                self.selected_version = Some(instance.id.clone());
+                self.selected_kind = VersionFilter::Modpacks;
+                self.reload_meta();
+                self.refresh_installed_mods();
+            }
+            WorkerMsg::ModpackInstallFailed(error) => {
+                self.modpack_installing = None;
+                self.status_message = format!("Modpack install failed: {error}");
             }
         }
     }

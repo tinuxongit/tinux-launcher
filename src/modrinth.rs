@@ -110,7 +110,11 @@ pub async fn search(
             .collect();
         groups.push(format!("[{}]", or_terms.join(",")));
     }
-    groups.push(format!(r#"["versions:{mc_version}"]"#));
+    // An empty mc_version means "any version" — used by the modpack browser's
+    // version filter when set to Any.
+    if !mc_version.is_empty() {
+        groups.push(format!(r#"["versions:{mc_version}"]"#));
+    }
     groups.push(format!(r#"["project_type:{project_type}"]"#));
     let facets = format!("[{}]", groups.join(","));
     let url = format!("{API_BASE}/search");
@@ -365,6 +369,40 @@ async fn install_one(
     }
     fs::rename(&tmp, &dest).await?;
     Ok(file.filename.clone())
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ModpackFile {
+    pub url: String,
+    pub filename: String,
+    pub sha1: Option<String>,
+    pub version_number: String,
+}
+
+/// Resolve the newest compatible `.mrpack` archive for a modpack project.
+/// Modpacks declare their own loader, so we don't filter by one here.
+pub async fn fetch_modpack_file(
+    client: &reqwest::Client,
+    project_id_or_slug: &str,
+    mc_version: &str,
+) -> Result<ModpackFile> {
+    let versions = list_versions(client, project_id_or_slug, mc_version, None).await?;
+    let chosen = pick_version(&versions)
+        .ok_or_else(|| anyhow!("no modpack version found for Minecraft {mc_version}"))?;
+    let file = chosen
+        .files
+        .iter()
+        .find(|f| f.filename.ends_with(".mrpack"))
+        .or_else(|| chosen.files.iter().find(|f| f.primary))
+        .or_else(|| chosen.files.first())
+        .ok_or_else(|| anyhow!("modpack version has no downloadable file"))?;
+    Ok(ModpackFile {
+        url: file.url.clone(),
+        filename: file.filename.clone(),
+        sha1: file.hashes.sha1.clone(),
+        version_number: chosen.version_number.clone(),
+    })
 }
 
 pub async fn delete(mods_dir: &Path, filename: &str) -> Result<()> {

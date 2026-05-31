@@ -1,6 +1,8 @@
 use ratatui::style::{Color, Modifier, Style};
 
 pub const BG: Color = Color::Rgb(18, 20, 24);
+/// A touch darker than BG — used to "dim out" a row that's mid-download.
+pub const OVERLAY: Color = Color::Rgb(10, 11, 13);
 pub const PANEL_HI: Color = Color::Rgb(40, 46, 54);
 pub const BORDER: Color = Color::Rgb(60, 68, 78);
 

@@ -33,8 +33,9 @@ fn pick_game_dir(paths: &Paths, plan: &InstallPlan) -> std::path::PathBuf {
 }
 
 fn is_modded_id(id: &str) -> bool {
-    // Synthetic ids we generate for mod-loader installs.
-    id.starts_with("fabric-loader-")
+    // Synthetic ids we generate for mod-loader installs and modpack instances.
+    // Both get their own per-instance game dir under `instances/<id>/`.
+    id.starts_with("fabric-loader-") || id.starts_with("modpack-")
 }
 
 /// One-time copy from a pre-shared-.minecraft instance dir into the shared

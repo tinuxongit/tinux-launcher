@@ -24,6 +24,8 @@ pub enum Hit {
     VersionRow(usize),
     FilterReleases,
     FilterModded,
+    FilterModpacks,
+    RemoveModpack(usize),
     ToggleShowSnapshots,
     ToggleShowOlder,
     BrowseModsButton,
@@ -32,6 +34,10 @@ pub enum Hit {
     BrowserTabMods,
     BrowserTabShaders,
     BrowserTabResourcePacks,
+    BrowserTabDatapacks,
+    BrowserTabModpacks,
+    BrowserTabsScrollLeft,
+    BrowserTabsScrollRight,
     ShowMoreModsButton,
     DismissInfoPopup,
     CategoryChip(usize),
@@ -84,6 +90,14 @@ pub enum Hit {
     InstalledFilterToggle,
     ExportProfileButton,
     ImportProfileButton,
+    OpenContentFolder,
+    OpenModpackBrowser,
+    CloseModpackBrowser,
+    OpenVersionPicker,
+    CloseVersionPicker,
+    VersionPickerField,
+    VersionPickerRow(usize),
+    VersionPickerScrollbar,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -198,4 +212,12 @@ pub enum WorkerMsg {
         missing: usize,
     },
     VerifyFailed(String),
+    ModpackInstallStarted(String),
+    ModpackInstallProgress {
+        done: u64,
+        total: u64,
+        what: String,
+    },
+    ModpackInstallDone(crate::config::ModpackInstance),
+    ModpackInstallFailed(String),
 }

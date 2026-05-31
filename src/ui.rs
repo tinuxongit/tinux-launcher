@@ -83,8 +83,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.mod_browser_open {
         draw_mod_browser(f, app, frame);
     }
-    if app.mod_browser_open && app.filters_popup_open {
+    if app.modpack_browser_open {
+        draw_modpack_browser(f, app, frame);
+    }
+    if (app.mod_browser_open || app.modpack_browser_open) && app.filters_popup_open {
         draw_filters_popup(f, app, frame);
+    }
+    if app.modpack_browser_open && app.version_picker_open {
+        draw_version_picker(f, app, frame);
     }
     if update_modal_visible(app) {
         draw_update_modal(f, app, frame);
@@ -553,9 +559,15 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
         ),
     ];
     if let Some(ver) = app.selected_version.as_deref() {
-        let body = match app.filter.loader_label() {
-            Some(loader) => format!("{ver} ({loader})"),
-            None => ver.to_string(),
+        // Show the modpack's name rather than its synthetic id.
+        let label = if app.selected_kind == VersionFilter::Modpacks {
+            app.modpack_by_id(ver).map(|m| m.name.clone()).unwrap_or_else(|| ver.to_string())
+        } else {
+            ver.to_string()
+        };
+        let body = match app.selected_kind.loader_label() {
+            Some(loader) => format!("{label} ({loader})"),
+            None => label,
         };
         title_spans.push(Span::styled("  ·  ", theme::dim()));
         title_spans.push(Span::styled(
@@ -659,11 +671,22 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(outer_rows[0]);
 
-    let modded = app.filter == VersionFilter::Modded;
-    let sel = match app.selected_manifest_entry() {
-        Some(v) if modded => format!("{}  ·  Fabric mod loader", v.id),
-        Some(v) => format!("{} ({})", v.id, v.kind.label()),
-        None => "(no version selected)".to_string(),
+    // Play/launch follow the *selection's* kind, not the current Versions tab,
+    // so a selected modpack stays the launch target after flipping tabs.
+    let modded = app.selected_kind == VersionFilter::Modded;
+    let modpacks = app.selected_kind == VersionFilter::Modpacks;
+    let instance_sel = modded || modpacks;
+    let sel = if modpacks {
+        match app.selected_version.as_ref().and_then(|id| app.modpack_by_id(id)) {
+            Some(m) => format!("{}  ·  Modpack ({})", m.name, m.mc_version),
+            None => "(no modpack selected)".to_string(),
+        }
+    } else {
+        match app.selected_manifest_entry() {
+            Some(v) if modded => format!("{}  ·  Fabric mod loader", v.id),
+            Some(v) => format!("{} ({})", v.id, v.kind.label()),
+            None => "(no version selected)".to_string(),
+        }
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
@@ -703,12 +726,12 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(22),
-            Constraint::Length(2),
-            Constraint::Length(20),
+            Constraint::Length(3),
+            Constraint::Length(26),
             Constraint::Min(0),
         ])
         .split(rows[3]);
-    let installed = if modded {
+    let installed = if instance_sel {
         app.selected_modded_installed()
     } else {
         app.selected_is_installed()
@@ -726,11 +749,11 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         draw_button(f, app, btn_cols[0], "⬇  Install", Hit::InstallButton, true);
     }
-    if modded {
+    if instance_sel {
         if installed {
-            draw_button(f, app, btn_cols[2], "📦 Browse Mods", Hit::BrowseModsButton, false);
+            draw_button(f, app, btn_cols[2], "📦 Browse Content", Hit::BrowseModsButton, false);
         } else {
-            draw_dim_clickable_button(f, app, btn_cols[2], "📦 Browse Mods", Hit::BrowseModsButton);
+            draw_dim_clickable_button(f, app, btn_cols[2], "📦 Browse Content", Hit::BrowseModsButton);
         }
     }
 
@@ -973,12 +996,13 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(inner);
 
-    // Filter strip: [ Releases | Modded ]   Show: ✓ Snapshots   ☐ Older            [📂 Open folder]
+    // Filter strip: [ Releases | Modded | Modpacks ]   Show: ✓ Snapshots …   [📂 Open folder]
     let modded_active = app.filter == VersionFilter::Modded;
+    let modpacks_active = app.filter == VersionFilter::Modpacks;
     let filter_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(34), // 2-tab segmented control
+            Constraint::Length(48), // 3-tab segmented control
             Constraint::Length(3),  // gap
             Constraint::Length(8),  // "Show:" label
             Constraint::Length(18), // Snapshots pill
@@ -1003,53 +1027,87 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
                 Hit::FilterModded,
                 modded_active,
             ),
+            (
+                "Modpacks",
+                Hit::FilterModpacks,
+                modpacks_active,
+            ),
         ],
     );
 
-    // "Show:" label vertically centered in the strip.
-    {
-        let mid = filter_cols[2].y + filter_cols[2].height / 2;
+    if modpacks_active {
+        // Modpacks have no version toggles; show a short status instead.
+        let n = app.modpack_instances.len();
+        let hint = if n == 0 {
+            "No modpacks installed yet — use Browse Modpacks →".to_string()
+        } else {
+            format!("{n} modpack{} installed", if n == 1 { "" } else { "s" })
+        };
+        let end = filter_cols[5].x + filter_cols[5].width;
+        let rect = Rect::new(filter_cols[2].x, filter_cols[2].y, end - filter_cols[2].x, 1);
+        let mid = rect.y + rect.height / 2;
         f.render_widget(
-            Paragraph::new(Span::styled("Show:", theme::dim())).style(theme::base()),
-            Rect::new(filter_cols[2].x, mid, filter_cols[2].width, 1),
+            Paragraph::new(Span::styled(hint, theme::dim())).style(theme::base()),
+            Rect::new(rect.x, mid, rect.width, 1),
         );
-    }
+    } else {
+        // "Show:" label vertically centered in the strip.
+        {
+            let mid = filter_cols[2].y + filter_cols[2].height / 2;
+            f.render_widget(
+                Paragraph::new(Span::styled("Show:", theme::dim())).style(theme::base()),
+                Rect::new(filter_cols[2].x, mid, filter_cols[2].width, 1),
+            );
+        }
 
-    draw_toggle_pill(
-        f,
-        app,
-        filter_cols[3],
-        "Snapshots",
-        app.show_snapshots,
-        Hit::ToggleShowSnapshots,
-    );
-    // Older only matters in the Releases tab (Fabric doesn't ship for 1.12-).
-    if !modded_active {
         draw_toggle_pill(
             f,
             app,
-            filter_cols[5],
-            "Older",
-            app.show_older,
-            Hit::ToggleShowOlder,
+            filter_cols[3],
+            "Snapshots",
+            app.show_snapshots,
+            Hit::ToggleShowSnapshots,
         );
-    } else if let Some(v) = app.latest_stable_fabric_loader() {
-        // Reuse that column to show the loader hint when modded is active.
-        let hint_rect = Rect::new(
-            filter_cols[5].x,
-            filter_cols[5].y,
-            filter_cols[5].width + filter_cols[6].width,
-            filter_cols[5].height,
-        );
-        let mid = hint_rect.y + hint_rect.height / 2;
-        f.render_widget(
-            Paragraph::new(Span::styled(format!("Loader: Fabric {v}"), theme::dim()))
-                .style(theme::base()),
-            Rect::new(hint_rect.x, mid, hint_rect.width, 1),
-        );
+        // Older only matters in the Releases tab (Fabric doesn't ship for 1.12-).
+        if !modded_active {
+            draw_toggle_pill(
+                f,
+                app,
+                filter_cols[5],
+                "Older",
+                app.show_older,
+                Hit::ToggleShowOlder,
+            );
+        } else if let Some(v) = app.latest_stable_fabric_loader() {
+            // Reuse that column to show the loader hint when modded is active.
+            let hint_rect = Rect::new(
+                filter_cols[5].x,
+                filter_cols[5].y,
+                filter_cols[5].width + filter_cols[6].width,
+                filter_cols[5].height,
+            );
+            let mid = hint_rect.y + hint_rect.height / 2;
+            f.render_widget(
+                Paragraph::new(Span::styled(format!("Loader: Fabric {v}"), theme::dim()))
+                    .style(theme::base()),
+                Rect::new(hint_rect.x, mid, hint_rect.width, 1),
+            );
+        }
     }
 
-    if app.selected_version.is_some() {
+    if modpacks_active {
+        // Use the flex + button columns for a roomy, dedicated entry point.
+        let bx = filter_cols[6].x;
+        let bw = (filter_cols[7].x + filter_cols[7].width).saturating_sub(bx);
+        draw_button(
+            f,
+            app,
+            Rect::new(bx, filter_cols[7].y, bw, filter_cols[7].height),
+            "📦 Browse Modpacks",
+            Hit::OpenModpackBrowser,
+            true,
+        );
+    } else if app.selected_version.is_some() {
         draw_button(
             f,
             app,
@@ -1077,6 +1135,11 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
     let sb_rect = list_chunks[1];
 
     wipe(f, content_rect);
+
+    if modpacks_active {
+        draw_modpack_rows(f, app, content_rect, sb_rect);
+        return;
+    }
 
     let rows_n = content_rect.height as usize;
     let snapshot: Vec<(String, String, String)> = app
@@ -1109,7 +1172,10 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
         let global_idx = start + i;
         let y = content_rect.y + i as u16;
         let rect = Rect::new(content_rect.x, y, content_rect.width, 1);
-        let selected = app.selected_version.as_deref() == Some(id.as_str());
+        // Highlight only when the selection actually belongs to this tab — a
+        // modded "1.20.4" shouldn't light up the release "1.20.4" row.
+        let selected =
+            app.selected_version.as_deref() == Some(id.as_str()) && app.selected_kind == app.filter;
         let hovered = app.hover == Some(Hit::VersionRow(global_idx));
         let installed = if modded {
             app.modded_id_for(id)
@@ -1153,6 +1219,90 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
         };
         f.render_widget(Paragraph::new(msg).style(theme::dim()), content_rect);
     } else if total > rows_n {
+        let mut sb_state = ScrollbarState::new(total.saturating_sub(rows_n))
+            .position(app.list_offset)
+            .viewport_content_length(rows_n);
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(Style::default().fg(theme::BORDER).bg(theme::BG))
+            .thumb_style(Style::default().fg(theme::ACCENT).bg(theme::BG))
+            .begin_symbol(None)
+            .end_symbol(None);
+        f.render_stateful_widget(sb, sb_rect, &mut sb_state);
+        app.click_regions.push((sb_rect, Hit::VersionsScrollbar));
+    }
+}
+
+fn draw_modpack_rows(f: &mut Frame, app: &mut App, content_rect: Rect, sb_rect: Rect) {
+    let rows_n = content_rect.height as usize;
+    let total = app.modpack_instances.len();
+    if total > rows_n && app.list_offset + rows_n > total {
+        app.list_offset = total - rows_n;
+    }
+    if total <= rows_n {
+        app.list_offset = 0;
+    }
+    if total == 0 {
+        f.render_widget(
+            Paragraph::new(
+                "No modpacks installed yet. Open a Fabric version's Content browser, switch to the Modpacks tab, and install one.",
+            )
+            .style(theme::dim())
+            .wrap(Wrap { trim: true }),
+            content_rect,
+        );
+        return;
+    }
+    let start = app.list_offset;
+    let end = (start + rows_n).min(total);
+    // Snapshot first so we're not borrowing app while pushing click regions.
+    let snapshot: Vec<(String, String, String, bool)> = app.modpack_instances[start..end]
+        .iter()
+        .map(|m| {
+            let installed = app.paths.version_json(&m.id).exists();
+            (m.id.clone(), m.name.clone(), m.mc_version.clone(), installed)
+        })
+        .collect();
+
+    let rm = " × Remove ";
+    let rm_w = rm.chars().count() as u16;
+    for (i, (id, name, mc, installed)) in snapshot.iter().enumerate() {
+        let global_idx = start + i;
+        let y = content_rect.y + i as u16;
+        let rect = Rect::new(content_rect.x, y, content_rect.width, 1);
+        let selected = app.selected_version.as_deref() == Some(id.as_str())
+            && app.selected_kind == VersionFilter::Modpacks;
+        let hovered = app.hover == Some(Hit::VersionRow(global_idx));
+        let row_style = if selected {
+            theme::list_selected()
+        } else if hovered {
+            theme::button_idle()
+        } else {
+            theme::base()
+        };
+        let marker = if selected { "▶" } else { " " };
+        let check = if *installed { "✓ " } else { "  " };
+        let name_disp: String = name.chars().take(30).collect();
+        let body = format!(" {marker} {check}{name_disp:<30}  {mc:>9} ");
+        f.render_widget(
+            Paragraph::new(Span::styled(body, row_style)).style(row_style),
+            rect,
+        );
+        app.click_regions.push((rect, Hit::VersionRow(global_idx)));
+        // Remove button at the right edge (pushed last so it wins the overlap).
+        if content_rect.width > rm_w + 6 {
+            let rm_rect = Rect::new(content_rect.x + content_rect.width - rm_w, y, rm_w, 1);
+            let rm_hovered = app.hover == Some(Hit::RemoveModpack(global_idx));
+            let rm_style = if rm_hovered {
+                Style::default().fg(theme::RED).bg(theme::BG).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::FG_DIM).bg(theme::BG)
+            };
+            f.render_widget(Paragraph::new(rm).style(rm_style), rm_rect);
+            app.click_regions.push((rm_rect, Hit::RemoveModpack(global_idx)));
+        }
+    }
+
+    if total > rows_n {
         let mut sb_state = ScrollbarState::new(total.saturating_sub(rows_n))
             .position(app.list_offset)
             .viewport_content_length(rows_n);
@@ -2605,11 +2755,16 @@ fn draw_text_field(
 
 fn draw_mod_browser(f: &mut Frame, app: &mut App, area: Rect) {
     wipe(f, area);
-    let title = format!(
-        " Content browser · {} · {} ",
-        ModLoader::Fabric.label(),
-        app.selected_version.clone().unwrap_or_else(|| "?".into())
-    );
+    // For a modpack instance the selected id isn't an MC version, so resolve
+    // it (and prefer the modpack's name) for a readable header.
+    let target = app
+        .selected_version
+        .as_ref()
+        .and_then(|id| app.modpack_by_id(id))
+        .map(|m| format!("{} · {}", m.name, m.mc_version))
+        .or_else(|| app.browse_mc_version())
+        .unwrap_or_else(|| "?".into());
+    let title = format!(" Content browser · {} · {} ", ModLoader::Fabric.label(), target);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -2704,22 +2859,262 @@ fn draw_mod_browser(f: &mut Frame, app: &mut App, area: Rect) {
     draw_installed_mods_pane(f, app, right);
 }
 
+fn draw_modpack_browser(f: &mut Frame, app: &mut App, area: Rect) {
+    wipe(f, area);
+    let ver = app
+        .modpack_browse_version
+        .clone()
+        .unwrap_or_else(|| "select a version".into());
+    let title = format!(" Modpack browser · {} · {} ", ModLoader::Fabric.label(), ver);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::ACCENT))
+        .style(theme::base())
+        .title(Span::styled(title, theme::accent_bold()));
+    let inner = block.inner(area).inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    f.render_widget(block, area);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(BUTTON_H),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+    // Search field + Version filter + Categories filter + Close.
+    let top = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(20),
+            Constraint::Length(1),
+            Constraint::Length(18),
+            Constraint::Length(1),
+            Constraint::Length(11),
+        ])
+        .split(rows[0]);
+    draw_mod_search_field(f, app, top[0]);
+    let ver_label = match &app.modpack_browse_version {
+        Some(v) => format!("▾ {v}"),
+        None => "▾ Select version".to_string(),
+    };
+    draw_button(
+        f,
+        app,
+        top[2],
+        &ver_label,
+        Hit::OpenVersionPicker,
+        // Highlight as "needs attention" until a version is chosen.
+        app.modpack_browse_version.is_none(),
+    );
+    let count = app.selected_categories.len();
+    let filter_label = if count == 0 {
+        "▼ Filters".to_string()
+    } else {
+        format!("▼ Filters ({count})")
+    };
+    draw_button(f, app, top[4], &filter_label, Hit::OpenFiltersButton, count > 0);
+    draw_button(f, app, top[6], "× Close", Hit::CloseModpackBrowser, false);
+
+    f.render_widget(
+        Paragraph::new(
+            "Installing a modpack creates a new launchable instance under Versions ▸ Modpacks.",
+        )
+        .style(theme::dim()),
+        rows[1],
+    );
+
+    if app.modpack_browse_version.is_none() {
+        f.render_widget(
+            Paragraph::new("Pick a Minecraft version with the “▾ Select version” button above to start browsing modpacks.")
+                .style(theme::dim())
+                .wrap(Wrap { trim: true }),
+            rows[2],
+        );
+    } else {
+        draw_search_results(f, app, rows[2]);
+    }
+}
+
+fn draw_version_picker(f: &mut Frame, app: &mut App, area: Rect) {
+    let w = 56u16.min(area.width.saturating_sub(4));
+    let h = 26u16.min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let rect = Rect::new(x, y, w, h);
+    f.render_widget(Fill { style: theme::base() }, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::ACCENT))
+        .style(theme::base())
+        .title(Span::styled(
+            " Pick Minecraft version ",
+            theme::accent_bold(),
+        ));
+    let inner = block.inner(rect).inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    f.render_widget(block, rect);
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(BUTTON_H),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+    let focused = app.focus == Focus::VersionPicker;
+    let content = if !focused && app.version_picker_query.is_empty() {
+        "(type to filter, e.g. 1.20)".to_string()
+    } else {
+        app.version_picker_query.clone()
+    };
+    let head = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(1), Constraint::Length(11)])
+        .split(rows[0]);
+    draw_text_field(
+        f,
+        app,
+        head[0],
+        Hit::VersionPickerField,
+        Focus::VersionPicker,
+        " Search versions ",
+        &content,
+        focused,
+    );
+    draw_button(f, app, head[2], "× Close", Hit::CloseVersionPicker, false);
+
+    // Scrollable list of filtered Fabric MC versions.
+    let list_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(rows[2]);
+    let content = list_cols[0];
+    let sb_rect = list_cols[1];
+    let versions: Vec<String> = app.picker_versions().into_iter().cloned().collect();
+    let total = versions.len();
+    let rows_n = content.height as usize;
+
+    if total == 0 {
+        f.render_widget(
+            Paragraph::new("No matching versions").style(theme::dim()),
+            content,
+        );
+        return;
+    }
+    if total > rows_n && app.version_picker_offset + rows_n > total {
+        app.version_picker_offset = total - rows_n;
+    }
+    if total <= rows_n {
+        app.version_picker_offset = 0;
+    }
+    let start = app.version_picker_offset.min(total.saturating_sub(1));
+    let end = (start + rows_n).min(total);
+    for (row_i, v) in versions[start..end].iter().enumerate() {
+        let i = start + row_i;
+        let y = content.y + row_i as u16;
+        let selected = app.modpack_browse_version.as_deref() == Some(v.as_str());
+        let hovered = app.hover == Some(Hit::VersionPickerRow(i));
+        let style = if selected {
+            theme::list_selected()
+        } else if hovered {
+            theme::button_idle()
+        } else {
+            theme::base()
+        };
+        let marker = if selected { "▶ " } else { "  " };
+        let r = Rect::new(content.x, y, content.width, 1);
+        f.render_widget(Paragraph::new(format!("{marker}{v}")).style(style), r);
+        app.click_regions.push((r, Hit::VersionPickerRow(i)));
+    }
+
+    if total > rows_n {
+        let mut sb_state = ScrollbarState::new(total.saturating_sub(rows_n))
+            .position(app.version_picker_offset)
+            .viewport_content_length(rows_n);
+        let sb = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .style(Style::default().fg(theme::BORDER).bg(theme::BG))
+            .thumb_style(Style::default().fg(theme::ACCENT).bg(theme::BG))
+            .begin_symbol(None)
+            .end_symbol(None);
+        f.render_stateful_widget(sb, sb_rect, &mut sb_state);
+        app.click_regions.push((sb_rect, Hit::VersionPickerScrollbar));
+    }
+}
+
+fn browser_tab_hit(kind: ContentKind) -> Hit {
+    match kind {
+        ContentKind::Mods => Hit::BrowserTabMods,
+        ContentKind::Shaders => Hit::BrowserTabShaders,
+        ContentKind::ResourcePacks => Hit::BrowserTabResourcePacks,
+        ContentKind::Datapacks => Hit::BrowserTabDatapacks,
+        ContentKind::Modpacks => Hit::BrowserTabModpacks,
+    }
+}
+
 fn draw_browser_tabs(f: &mut Frame, app: &mut App, area: Rect) {
+    let kinds = ContentKind::ALL;
+    let n = kinds.len();
+    let right = area.x + area.width;
+
+    let arrow_style = |hovered: bool| {
+        if hovered {
+            Style::default().fg(theme::ACCENT_HI).bg(theme::BG).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::ACCENT).bg(theme::BG)
+        }
+    };
+    let tab_width = |kind: ContentKind| -> u16 {
+        kind.label().chars().count() as u16 + 2 // surrounding spaces
+    };
+    // Precompute so the per-tab closures don't hold a borrow of `app` across
+    // the `click_regions` pushes below.
+    let shaders_off = !app.shaders_available();
+    let is_disabled = |kind: ContentKind| matches!(kind, ContentKind::Shaders) && shaders_off;
+
+    // If every tab fits, never scroll (and hide the arrows); otherwise honour
+    // the saved scroll offset.
+    let total: u16 = kinds.iter().map(|k| tab_width(*k) + 2).sum();
+    let all_fit = total <= area.width;
+    let offset = if all_fit { 0 } else { app.browser_tab_offset.min(n - 1) };
+
     let mut x = area.x;
-    for kind in ContentKind::ALL {
-        let label = format!(" {} ", kind.label());
-        let w = label.chars().count() as u16;
-        if x + w > area.x + area.width {
+
+    // Left arrow when tabs are hidden to the left.
+    if offset > 0 {
+        let rect = Rect::new(x, area.y, 2, 1);
+        let hovered = app.hover == Some(Hit::BrowserTabsScrollLeft);
+        f.render_widget(Paragraph::new("‹ ").style(arrow_style(hovered)), rect);
+        app.click_regions.push((rect, Hit::BrowserTabsScrollLeft));
+        x += 2;
+    }
+
+    let mut last_drawn: Option<usize> = None;
+    for (i, kind) in kinds.iter().enumerate().skip(offset) {
+        let kind = *kind;
+        let disabled = is_disabled(kind);
+        let w = tab_width(kind);
+        // Leave room for the right arrow when more tabs follow.
+        let reserve = if i + 1 < n { 2 } else { 0 };
+        if x + w + reserve > right {
             break;
         }
         let rect = Rect::new(x, area.y, w, 1);
         let active = app.browser_kind == kind;
-        let hit = match kind {
-            ContentKind::Mods => Hit::BrowserTabMods,
-            ContentKind::Shaders => Hit::BrowserTabShaders,
-            ContentKind::ResourcePacks => Hit::BrowserTabResourcePacks,
-        };
-        let disabled = matches!(kind, ContentKind::Shaders) && !app.shaders_available();
+        let hit = browser_tab_hit(kind);
         let hovered = app.hover == Some(hit);
         let style = if active {
             Style::default()
@@ -2733,12 +3128,37 @@ fn draw_browser_tabs(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             Style::default().fg(theme::FG).bg(theme::BG)
         };
-        let suffix = if disabled { " 🔒" } else { "" };
-        let display = format!("{label}{suffix}");
-        f.render_widget(Paragraph::new(display).style(style), rect);
-        // Even disabled tabs are clickable — clicking shows an info popup.
+        f.render_widget(Paragraph::new(format!(" {} ", kind.label())).style(style), rect);
         app.click_regions.push((rect, hit));
         x += w + 2;
+        last_drawn = Some(i);
+    }
+
+    // Right arrow when tabs remain past the visible window.
+    let more_right = last_drawn.map(|i| i + 1 < n).unwrap_or(offset < n);
+    if more_right {
+        let rect = Rect::new(right.saturating_sub(1), area.y, 1, 1);
+        let hovered = app.hover == Some(Hit::BrowserTabsScrollRight);
+        f.render_widget(Paragraph::new("›").style(arrow_style(hovered)), rect);
+        app.click_regions.push((rect, Hit::BrowserTabsScrollRight));
+    }
+
+    // Divider + "Open folder" shortcut for the active tab. Modpacks have no
+    // per-instance folder, and when the strip is scrolled there's no room.
+    if !app.browser_kind.is_modpack() && !more_right {
+        let btn = format!("📁 Open {} folder", app.browser_kind.label().to_lowercase());
+        let btn_w = btn.chars().count() as u16 + 1; // +1 for the wide glyph
+        let divider_w = 2u16;
+        if x + divider_w + btn_w <= right {
+            f.render_widget(
+                Paragraph::new("│").style(Style::default().fg(theme::BORDER).bg(theme::BG)),
+                Rect::new(x, area.y, 1, 1),
+            );
+            let btn_rect = Rect::new(x + divider_w, area.y, btn_w, 1);
+            let hovered = app.hover == Some(Hit::OpenContentFolder);
+            f.render_widget(Paragraph::new(btn).style(arrow_style(hovered)), btn_rect);
+            app.click_regions.push((btn_rect, Hit::OpenContentFolder));
+        }
     }
 }
 
@@ -2791,7 +3211,12 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
         count > 0,
     );
 
-    let list_area = rows[2];
+    draw_search_results(f, app, rows[2]);
+}
+
+/// The Modrinth results list (with the download cue + "Show more"), shared by
+/// the Content browser and the dedicated modpack browser.
+fn draw_search_results(f: &mut Frame, app: &mut App, list_area: Rect) {
     wipe(f, list_area);
 
     if app.mod_search_loading && app.mod_search_results.is_empty() {
@@ -2857,10 +3282,21 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
         }
         let row_rect = Rect::new(list_area.x, y, list_area.width, 2);
         let installed = app.is_project_installed(&hit.project_id);
-        let installing_this = app.mod_installing.as_deref() == Some(hit.project_id.as_str());
-        let hovered = app.hover == Some(Hit::ModResult(global)) && !installed;
-        let bg = if hovered { theme::PANEL_HI } else { theme::BG };
-        let (title_fg, body_fg, dim_fg) = if installed {
+        // Mods install via `mod_installing`, modpacks via `modpack_installing`;
+        // either one darkens the matching row while it downloads.
+        let installing_this = app.mod_installing.as_deref() == Some(hit.project_id.as_str())
+            || app.modpack_installing.as_deref() == Some(hit.project_id.as_str());
+        // Both installed and mid-download rows are inert (not clickable).
+        let inert = installed || installing_this;
+        let hovered = app.hover == Some(Hit::ModResult(global)) && !inert;
+        let bg = if installing_this {
+            theme::OVERLAY
+        } else if hovered {
+            theme::PANEL_HI
+        } else {
+            theme::BG
+        };
+        let (title_fg, body_fg, dim_fg) = if inert {
             (theme::FG_DIM, theme::FG_DIM, theme::FG_DIM)
         } else {
             (theme::ACCENT_HI, theme::FG, theme::FG_DIM)
@@ -2868,7 +3304,7 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
         let title_style = Style::default()
             .fg(title_fg)
             .bg(bg)
-            .add_modifier(if installed { Modifier::empty() } else { Modifier::BOLD });
+            .add_modifier(if inert { Modifier::DIM } else { Modifier::BOLD });
         let dim_style = Style::default().fg(dim_fg).bg(bg);
         let prefix = if installed {
             "✓ "
@@ -2877,13 +3313,15 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             "▸ "
         };
-        let prefix_color = if installed { theme::ACCENT } else { theme::ACCENT };
+        let prefix_color = theme::ACCENT;
         let l1 = Line::from(vec![
             Span::styled(prefix, Style::default().fg(prefix_color).bg(bg)),
             Span::styled(hit.title.clone(), title_style),
             Span::styled(format!("  by {}", hit.author), dim_style),
             if installed {
                 Span::styled("   (installed)", Style::default().fg(theme::ACCENT).bg(bg))
+            } else if installing_this {
+                Span::styled("   (downloading…)", Style::default().fg(theme::GOLD).bg(bg))
             } else {
                 Span::raw("")
             },
@@ -2901,7 +3339,7 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
             Paragraph::new(vec![l1, l2]).style(Style::default().bg(bg)),
             row_rect,
         );
-        if !installed {
+        if !inert {
             app.click_regions.push((row_rect, Hit::ModResult(global)));
         }
     }
@@ -2972,6 +3410,8 @@ fn draw_mod_search_field(f: &mut Frame, app: &mut App, rect: Rect) {
         ContentKind::Mods => " 🔍 Filter mods ",
         ContentKind::Shaders => " 🔍 Filter shaders ",
         ContentKind::ResourcePacks => " 🔍 Filter texture packs ",
+        ContentKind::Datapacks => " 🔍 Filter datapacks ",
+        ContentKind::Modpacks => " 🔍 Filter modpacks ",
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2982,9 +3422,11 @@ fn draw_mod_search_field(f: &mut Frame, app: &mut App, rect: Rect) {
     let inner = block.inner(rect);
     f.render_widget(block, rect);
     let placeholder = match app.browser_kind {
-        ContentKind::Mods => "Type to filter mods, then press Enter",
-        ContentKind::Shaders => "Type to filter shader packs, then press Enter",
-        ContentKind::ResourcePacks => "Type to filter texture packs, then press Enter",
+        ContentKind::Mods => "Type to filter mods",
+        ContentKind::Shaders => "Type to filter shader packs",
+        ContentKind::ResourcePacks => "Type to filter texture packs",
+        ContentKind::Datapacks => "Type to filter datapacks",
+        ContentKind::Modpacks => "Type to filter modpacks",
     };
     let content = if focused {
         format!("{}▎", app.mod_search_query)
@@ -3003,12 +3445,41 @@ fn draw_mod_search_field(f: &mut Frame, app: &mut App, rect: Rect) {
 }
 
 fn draw_installed_mods_pane(f: &mut Frame, app: &mut App, area: Rect) {
+    // Modpacks aren't per-instance files — installing one creates a whole new
+    // launchable instance — so this pane just explains that.
+    if app.browser_kind.is_modpack() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme::BORDER))
+            .style(theme::base())
+            .title(Span::styled(" Modpacks ", theme::accent_bold()));
+        let inner = block.inner(area).inner(Margin {
+            horizontal: 1,
+            vertical: 0,
+        });
+        f.render_widget(block, area);
+        f.render_widget(
+            Paragraph::new(
+                "Installing a modpack downloads its Minecraft + Fabric setup and every mod into a brand-new instance.\n\nFind installed modpacks under Versions ▸ Modpacks to launch or remove them.",
+            )
+            .style(theme::dim())
+            .wrap(Wrap { trim: true }),
+            inner,
+        );
+        return;
+    }
+
+    let noun = app.browser_kind.label().to_lowercase();
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme::BORDER))
         .style(theme::base())
-        .title(Span::styled(" Installed ", theme::accent_bold()));
+        .title(Span::styled(
+            format!(" Installed {} ", app.browser_kind.label()),
+            theme::accent_bold(),
+        ));
     let inner = block.inner(area).inner(Margin {
         horizontal: 1,
         vertical: 0,
@@ -3017,9 +3488,11 @@ fn draw_installed_mods_pane(f: &mut Frame, app: &mut App, area: Rect) {
 
     if app.installed_mods.is_empty() {
         f.render_widget(
-            Paragraph::new("No mods installed yet.\n\nSearch on the left and click a result.")
-                .style(theme::dim())
-                .wrap(Wrap { trim: true }),
+            Paragraph::new(format!(
+                "No {noun} installed yet.\n\nSearch on the left and click a result."
+            ))
+            .style(theme::dim())
+            .wrap(Wrap { trim: true }),
             inner,
         );
         return;
