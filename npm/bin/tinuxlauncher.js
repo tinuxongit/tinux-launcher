@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -40,6 +40,13 @@ if (!fs.existsSync(bin)) {
   if (!installBinary() && !buildRelease()) {
     process.exit(1);
   }
+}
+
+if (process.platform === "win32" && args.length === 0 && !process.env.TINUX_INLINE) {
+  if (spawnDetachedWindow()) {
+    process.exit(0);
+  }
+  process.exit(1);
 }
 
 const result = spawnSync(bin, args, {
@@ -84,3 +91,17 @@ function buildRelease() {
   return true;
 }
 
+function spawnDetachedWindow() {
+  try {
+    const child = spawn(bin, [], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+    });
+    child.unref();
+    return true;
+  } catch (error) {
+    console.error(`Failed to open Tinux Launcher: ${error.message}`);
+    return false;
+  }
+}

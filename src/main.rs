@@ -28,7 +28,9 @@ use crossterm::{
         KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen, SetTitle,
+    },
 };
 use event::{Hit, Tab};
 use futures::StreamExt;
@@ -38,6 +40,7 @@ use tokio::sync::mpsc::unbounded_channel;
 
 const TERMINAL_COLS: u16 = 120;
 const TERMINAL_ROWS: u16 = 38;
+const APP_TITLE: &str = "Tinux Launcher";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -80,7 +83,7 @@ async fn main() -> Result<()> {
 fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, Option<(u16, u16)>)> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, SetTitle(APP_TITLE), EnterAlternateScreen, EnableMouseCapture)?;
     // Keep the TUI at a predictable size while it is running.
     // Some terminal hosts ignore resize requests, so this is best-effort.
     let original_size = crossterm::terminal::size().ok();
