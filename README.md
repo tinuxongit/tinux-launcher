@@ -32,8 +32,9 @@ pnpm add -g .
 tinuxlauncher
 ```
 
-The pnpm installer downloads a prebuilt binary from GitHub Releases when one is available.
-If there is no prebuilt binary for the user's OS/CPU, it falls back to building from source with Rust/Cargo.
+Both installers download a prebuilt binary from GitHub Releases (Windows x64,
+Linux x64/arm64, macOS x64/arm64). If there is no prebuilt binary for the
+user's OS/CPU, they fall back to building from source with Rust/Cargo.
 
 To update to the latest GitHub version:
 
@@ -55,7 +56,7 @@ Requires Rust 1.80+ and a JDK on `PATH` (Java 17+ for 1.17+, Java 8 for older).
 
 | | |
 |---|---|
-| `1`–`4`, `Tab` | switch tab |
+| `1`–`5`, `Tab` | switch tab |
 | `Enter` | launch |
 | arrows / wheel | scroll |
 | click row | select log line |

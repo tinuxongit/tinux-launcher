@@ -25,7 +25,7 @@ async function install({ update = false, force = false } = {}) {
     return;
   }
 
-  await downloadLatestBinary(bin, { replace: fs.existsSync(bin) });
+  await downloadLatestBinary(bin);
 }
 
 async function updateBinary() {
@@ -39,7 +39,7 @@ async function updateBinary() {
 
   const from = current ? ` from v${normalizeVersion(current)}` : "";
   process.stderr.write(`Updating Tinux Launcher${from} to v${latest}...\n`);
-  await downloadLatestBinary(bin, { replace: fs.existsSync(bin) });
+  await downloadLatestBinary(bin);
 
   const updated = currentBinaryVersion();
   if (updated && normalizeVersion(updated) !== latest) {
@@ -49,13 +49,17 @@ async function updateBinary() {
   console.log(`Tinux Launcher updated to v${latest}.`);
 }
 
-async function downloadLatestBinary(dest, { replace = false } = {}) {
+async function downloadLatestBinary(dest) {
   const asset = assetName();
   const url = `https://github.com/${REPO}/releases/latest/download/${asset}`;
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  const downloadPath = replace
-    ? path.join(path.dirname(dest), `${path.basename(dest)}.${process.pid}.${Date.now()}.download`)
-    : dest;
+  // Always download to a temp file first — an interrupted download must never
+  // leave a half-written binary at the final path (it would be mistaken for a
+  // working install and never re-downloaded).
+  const downloadPath = path.join(
+    path.dirname(dest),
+    `${path.basename(dest)}.${process.pid}.${Date.now()}.download`,
+  );
 
   process.stderr.write(`Downloading Tinux Launcher binary for ${process.platform}/${process.arch}...\n`);
   try {
@@ -63,9 +67,7 @@ async function downloadLatestBinary(dest, { replace = false } = {}) {
     if (process.platform !== "win32") {
       fs.chmodSync(downloadPath, 0o755);
     }
-    if (replace) {
-      replaceFile(downloadPath, dest);
-    }
+    replaceFile(downloadPath, dest);
   } catch (error) {
     try {
       fs.rmSync(downloadPath, { force: true });
@@ -132,10 +134,16 @@ function assetName() {
     linux: "linux",
     darwin: "macos",
   }[process.platform];
-  const arch = {
+  let arch = {
     x64: "x64",
     arm64: "arm64",
   }[process.arch];
+
+  // Windows on ARM runs x64 binaries through emulation and there is no
+  // native arm64 release asset, so use the x64 one.
+  if (process.platform === "win32" && arch === "arm64") {
+    arch = "x64";
+  }
 
   if (!platform || !arch) {
     throw new Error(`No prebuilt binary for ${process.platform}/${process.arch}`);
@@ -173,6 +181,12 @@ function download(url, dest) {
 
         const file = fs.createWriteStream(dest);
         response.pipe(file);
+        // Without this, a connection dropped mid-download never settles the
+        // promise and the install hangs forever.
+        response.on("error", (error) => {
+          file.destroy();
+          reject(error);
+        });
         file.on("finish", () => file.close(resolve));
         file.on("error", reject);
       },
