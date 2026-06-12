@@ -258,6 +258,69 @@ pub fn swap_binary(new_exe: &Path) -> Result<PathBuf> {
     Ok(current)
 }
 
+/// `tinuxlauncher update` — check, download, and swap the binary in place,
+/// entirely from the CLI (no npm wrapper involved).
+pub async fn cli_update() -> Result<()> {
+    let client = reqwest::Client::builder()
+        .user_agent(format!("tinux-launcher/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("building HTTP client")?;
+    let info = check(&client).await?;
+    if info.up_to_date {
+        println!("Tinux Launcher is up to date (v{}).", info.current);
+        return Ok(());
+    }
+    let Some(asset) = info.asset.clone() else {
+        anyhow::bail!(
+            "no prebuilt binary for this platform — download manually from {}",
+            info.html_url
+        );
+    };
+    println!("Updating Tinux Launcher v{} -> v{}...", info.current, info.latest);
+    // The progress receiver is dropped on purpose — sends are best-effort.
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    drop(rx);
+    let tmp_dir = std::env::temp_dir().join("tinux-launcher-update");
+    let new_exe = download_asset(&client, &asset, &tmp_dir, tx).await?;
+    let current = swap_in_place(&new_exe)?;
+    println!("Updated to v{} ({}).", info.latest, current.display());
+    Ok(())
+}
+
+/// Windows allows renaming a running exe (just not deleting or overwriting
+/// it), so: shove ourselves aside, copy the new binary into our old path.
+/// The stale `.old.exe` is cleaned up on the next launch.
+#[cfg(windows)]
+fn swap_in_place(new_exe: &Path) -> Result<PathBuf> {
+    let current = std::env::current_exe().context("locating current exe")?;
+    let old = current.with_extension("old.exe");
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(&current, &old).context("moving running exe aside")?;
+    if let Err(e) = std::fs::copy(new_exe, &current) {
+        let _ = std::fs::rename(&old, &current);
+        return Err(anyhow::Error::from(e)).context("placing new exe");
+    }
+    let _ = std::fs::remove_file(new_exe);
+    Ok(current)
+}
+
+#[cfg(unix)]
+fn swap_in_place(new_exe: &Path) -> Result<PathBuf> {
+    swap_binary(new_exe)
+}
+
+/// Best-effort removal of the `.old.exe` a previous `update` left behind
+/// (it was still running at the time, so it couldn't delete itself).
+#[cfg(windows)]
+pub fn cleanup_old_binary() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::fs::remove_file(exe.with_extension("old.exe"));
+    }
+}
+
+#[cfg(not(windows))]
+pub fn cleanup_old_binary() {}
+
 pub fn spawn_check(client: reqwest::Client, tx: UnboundedSender<WorkerMsg>) {
     let _ = tx.send(WorkerMsg::UpdateCheckStarted);
     tokio::spawn(async move {

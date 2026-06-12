@@ -47,6 +47,10 @@ async fn main() -> Result<()> {
     if handle_cli_info_args() {
         return Ok(());
     }
+    if std::env::args().nth(1).as_deref() == Some("update") {
+        return update::cli_update().await;
+    }
+    update::cleanup_old_binary();
 
     let paths = paths::Paths::resolve()?;
     let _log_guard = logging::init(&paths.logs)?;
