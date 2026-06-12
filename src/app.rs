@@ -216,6 +216,10 @@ pub enum AccountMode {
 
 pub struct App {
     pub running: bool,
+    /// Set when an update has been swapped into place and the app should
+    /// re-exec this binary after the terminal is restored (Unix self-update).
+    #[cfg_attr(windows, allow(dead_code))]
+    pub relaunch_exe: Option<std::path::PathBuf>,
     pub tab: Tab,
     pub paths: Paths,
     pub client: reqwest::Client,
@@ -412,6 +416,7 @@ impl App {
             .unwrap_or_default();
         Self {
             running: true,
+            relaunch_exe: None,
             tab: Tab::Play,
             paths,
             client,

@@ -42,10 +42,31 @@ jobs:
           - os: windows-latest
             asset: tinux-launcher-windows-x64.exe
             bin: target/release/tinux-launcher.exe
+          # ubuntu-22.04 (not -latest) keeps the glibc baseline old enough
+          # that the binary also runs on older distros.
+          - os: ubuntu-22.04
+            asset: tinux-launcher-linux-x64
+            bin: target/release/tinux-launcher
+          - os: ubuntu-22.04-arm
+            asset: tinux-launcher-linux-arm64
+            bin: target/release/tinux-launcher
+          - os: macos-latest
+            asset: tinux-launcher-macos-arm64
+            bin: target/release/tinux-launcher
+          # No free x64 macOS runners anymore (macos-13 retired); cross-compile
+          # from the arm64 runner instead. Both archs share the same SDK.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: tinux-launcher-macos-x64
+            bin: target/x86_64-apple-darwin/release/tinux-launcher
 
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Add cross-compilation target
+        if: matrix.target
+        run: rustup target add ${{ matrix.target }}
 
       - name: Compute cache key
         id: cache-key
@@ -56,7 +77,9 @@ jobs:
           # bump invalidates the cache and we eat a full ~4 min recompile.
           lock_hash=$(sed '/^name = "tinux-launcher"$/{n;/^version = /d;}' Cargo.lock | sha256sum | awk '{print $1}')
           rustc_hash=$(rustc -vV | sha256sum | awk '{print $1}')
-          echo "key=cargo-${{ runner.os }}-${rustc_hash:0:12}-${lock_hash:0:32}" >> "$GITHUB_OUTPUT"
+          # matrix.asset disambiguates jobs that share a runner (the two
+          # macos-latest builds would otherwise collide on one cache entry).
+          echo "key=cargo-${{ matrix.asset }}-${rustc_hash:0:12}-${lock_hash:0:32}" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo + target
         uses: actions/cache@v4
@@ -72,10 +95,10 @@ jobs:
           # warm-up the cache is effectively never reused.
           key: ${{ steps.cache-key.outputs.key }}
           restore-keys: |
-            cargo-${{ runner.os }}-
+            cargo-${{ matrix.asset }}-
 
       - name: Build
-        run: cargo build --release --locked
+        run: cargo build --release --locked ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
 
       - name: Prepare asset
         if: startsWith(github.ref, 'refs/tags/v')

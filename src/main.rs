@@ -81,6 +81,17 @@ async fn main() -> Result<()> {
     if let Err(e) = &result {
         eprintln!("error: {e:#}");
     }
+
+    // Unix self-update: the new binary is already in place; replace this
+    // process with it now that the terminal has been restored.
+    #[cfg(unix)]
+    if let Some(exe) = app.relaunch_exe.take() {
+        use std::os::unix::process::CommandExt;
+        let err = std::process::Command::new(&exe).exec();
+        eprintln!("error: couldn't restart {}: {err}", exe.display());
+        eprintln!("The update was installed — start the launcher again manually.");
+    }
+
     result
 }
 
@@ -821,16 +832,7 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             }
         }
         Hit::OpenDataFolder => {
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("explorer.exe")
-                    .arg(app.paths.root.as_os_str())
-                    .spawn();
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = webbrowser::open(&app.paths.root.display().to_string());
-            }
+            open_path(&app.paths.root);
             app.status_message = format!("Opened {}", app.paths.root.display());
         }
         Hit::InstallUpdateNow => {
@@ -1170,6 +1172,9 @@ fn trigger_install_update(app: &mut App) {
             return;
         }
     };
+    // Windows can't replace a running exe, so a helper process does the swap
+    // and relaunch. Unix swaps in place here and re-execs after the TUI exits.
+    #[cfg(windows)]
     match update::spawn_swap_and_restart(&new_exe) {
         Ok(()) => {
             app.status_message = "Restarting to apply update...".into();
@@ -1177,6 +1182,17 @@ fn trigger_install_update(app: &mut App) {
         }
         Err(e) => {
             app.status_message = format!("Couldn't start updater: {e}");
+        }
+    }
+    #[cfg(unix)]
+    match update::swap_binary(&new_exe) {
+        Ok(exe) => {
+            app.relaunch_exe = Some(exe);
+            app.status_message = "Restarting to apply update...".into();
+            app.running = false;
+        }
+        Err(e) => {
+            app.status_message = format!("Couldn't install update: {e}");
         }
     }
 }

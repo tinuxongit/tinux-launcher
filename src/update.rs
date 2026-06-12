@@ -89,7 +89,11 @@ fn asset_for_current_platform(tag: &str) -> Option<ReleaseAsset> {
             "tinux-launcher-macos-x64"
         }
     } else if cfg!(target_os = "linux") {
-        "tinux-launcher-linux-x64"
+        if cfg!(target_arch = "aarch64") {
+            "tinux-launcher-linux-arm64"
+        } else {
+            "tinux-launcher-linux-x64"
+        }
     } else {
         return None;
     };
@@ -225,9 +229,33 @@ pub fn spawn_swap_and_restart(new_exe: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
-pub fn spawn_swap_and_restart(_new_exe: &Path) -> Result<()> {
-    anyhow::bail!("auto-install on this platform isn't supported yet — open the release page instead")
+/// Replace the running binary with `new_exe`. Unix lets us rename over a
+/// running executable (the live process keeps its inode), so no helper
+/// process is needed — the caller exits the TUI and re-execs the returned
+/// path. The copy is staged next to the destination so the final rename is
+/// atomic and never crosses filesystems.
+#[cfg(unix)]
+pub fn swap_binary(new_exe: &Path) -> Result<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let current = std::env::current_exe().context("locating current exe")?;
+    let staged = current.with_file_name(format!(
+        "{}.update-new",
+        current
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("tinux-launcher"),
+    ));
+    std::fs::copy(new_exe, &staged)
+        .with_context(|| format!("staging update at {}", staged.display()))?;
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))
+        .context("marking update executable")?;
+    if let Err(e) = std::fs::rename(&staged, &current) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e).with_context(|| format!("replacing {}", current.display()));
+    }
+    let _ = std::fs::remove_file(new_exe);
+    Ok(current)
 }
 
 pub fn spawn_check(client: reqwest::Client, tx: UnboundedSender<WorkerMsg>) {
