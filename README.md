@@ -9,13 +9,13 @@ Terminal Minecraft Java Edition launcher.
 Windows (PowerShell):
 
 ```powershell
-irm tinux.dev/install.ps1 | iex
+irm tinux.dev/install-launcher.ps1 | iex
 ```
 
 macOS / Linux:
 
 ```bash
-curl -fsSL tinux.dev/install.sh | sh
+curl -fsSL tinux.dev/install-launcher.sh | sh
 ```
 
 Installs a single binary on your PATH. Update later with `tinuxlauncher update`.
