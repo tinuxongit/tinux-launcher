@@ -4,6 +4,22 @@ Terminal Minecraft Java Edition launcher.
 
 ## Install & run
 
+### Quick install (no Node required)
+
+Windows (PowerShell):
+
+```powershell
+irm tinux.dev/install.ps1 | iex
+```
+
+macOS / Linux:
+
+```bash
+curl -fsSL tinux.dev/install.sh | sh
+```
+
+Installs a single binary on your PATH. Update later with `tinuxlauncher update`.
+
 ### npm
 
 From GitHub:
