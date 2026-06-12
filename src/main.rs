@@ -16,6 +16,7 @@ mod paths;
 mod skin;
 mod theme;
 mod ui;
+mod uninstall;
 mod update;
 mod version;
 mod worker;
@@ -49,6 +50,9 @@ async fn main() -> Result<()> {
     }
     if std::env::args().nth(1).as_deref() == Some("update") {
         return update::cli_update().await;
+    }
+    if std::env::args().nth(1).as_deref() == Some("uninstall") {
+        return uninstall::cli_uninstall();
     }
     update::cleanup_old_binary();
 
@@ -110,7 +114,7 @@ fn handle_cli_info_args() -> bool {
         }
         "--help" | "-h" => {
             println!("Tinux Launcher {}", env!("CARGO_PKG_VERSION"));
-            println!("Usage: tinuxlauncher [update|--version|--help]");
+            println!("Usage: tinuxlauncher [update|uninstall|--version|--help]");
             true
         }
         _ => false,

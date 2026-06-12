@@ -20,6 +20,15 @@ curl -fsSL tinux.dev/install-launcher.sh | sh
 
 Installs a single binary on your PATH. Update later with `tinuxlauncher update`.
 
+### Uninstall
+
+```bash
+tinuxlauncher uninstall
+```
+
+Removes the binary and, on Windows, the PATH entry the installer added.
+Asks separately before deleting game data (worlds, instances, mods, settings).
+
 ### npm
 
 From GitHub:
