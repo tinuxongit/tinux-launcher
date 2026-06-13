@@ -29,9 +29,15 @@ resolve the newest version through the `releases/latest` redirect on
 github.com. There is no npm publish step; the npm/pnpm wrappers also download
 from GitHub Releases.
 
-## CI
+## CI and tests
 
 `.github/workflows/ci.yml` runs `cargo test` on Ubuntu and Windows for every
 push and PR. The clippy job is informational only because the codebase has
 pre-existing warnings; don't gate on clippy or rustfmt until those are cleaned
 up repo-wide.
+
+`cargo test` runs only the fast unit tests. The `#[ignore]`d end-to-end tests
+in `src/forge.rs` download and run the real Forge/NeoForge installers
+(network and a local JDK required): `cargo test -- --ignored --nocapture`.
+Run them after touching forge.rs, the version-JSON merge, or download.rs's
+library handling.
