@@ -2057,7 +2057,7 @@ dependencies = [
 
 [[package]]
 name = "tinux-launcher"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "anyhow",
  "arboard",
