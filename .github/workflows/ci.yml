@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ci-${{ matrix.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ci-${{ matrix.os }}-
+
+      - name: Test
+        run: cargo test --locked
+
+  # Informational only: the codebase has pre-existing clippy findings, so this
+  # job reports but never blocks. Tighten to `-D warnings` once they're fixed.
+  clippy:
+    name: Clippy (informational)
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ci-clippy-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ci-clippy-
+
+      - name: Clippy
+        run: cargo clippy --all-targets
