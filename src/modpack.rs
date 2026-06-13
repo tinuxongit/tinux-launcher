@@ -5,13 +5,19 @@
 //! are copied verbatim into the instance. We install a modpack as its own
 //! launchable instance — see `worker::do_install_modpack`.
 
+use crate::download::CancelFlag;
 use anyhow::{anyhow, bail, Context, Result};
+use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncWriteExt;
+
+/// How many modpack files to download at once.
+const CONCURRENT_DOWNLOADS: usize = 8;
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -102,30 +108,51 @@ pub fn loader_requirement(index: &ModpackIndex) -> Result<LoaderReq> {
 }
 
 /// Download every client-relevant file in the index into `instance_dir` at its
-/// declared path, SHA1-verifying each. `progress(done, total, what)` is called
-/// before each download.
+/// declared path, SHA1-verifying each. Files are fetched concurrently;
+/// `progress(done, total, what)` is called as each one completes.
 pub async fn install_files(
     client: &reqwest::Client,
     index: &ModpackIndex,
     instance_dir: &Path,
-    progress: impl Fn(u64, u64, String),
+    cancel: &CancelFlag,
+    progress: impl Fn(u64, u64, String) + Sync,
 ) -> Result<usize> {
     let wanted: Vec<&IndexFile> = index.files.iter().filter(|f| client_wanted(f)).collect();
     let total = wanted.len() as u64;
-    let mut done = 0u64;
+    let done = AtomicU64::new(0);
+    let progress = &progress;
+    let done_ref = &done;
+
+    // Validate paths and URLs up front, then download concurrently.
+    let mut futs = Vec::with_capacity(wanted.len());
     for f in wanted {
         let dest = safe_join(instance_dir, &f.path)?;
         let url = f
             .downloads
             .first()
-            .ok_or_else(|| anyhow!("modpack file {} has no download URL", f.path))?;
-        progress(done, total, format!("Downloading {}", short_name(&f.path)));
-        download_verified(client, url, &dest, f.hashes.sha1.as_deref())
-            .await
-            .with_context(|| format!("downloading {}", f.path))?;
-        done += 1;
+            .ok_or_else(|| anyhow!("modpack file {} has no download URL", f.path))?
+            .clone();
+        let sha1 = f.hashes.sha1.clone();
+        let path = f.path.clone();
+        futs.push(async move {
+            if cancel.load(Ordering::Relaxed) {
+                bail!("cancelled by user");
+            }
+            download_verified(client, &url, &dest, sha1.as_deref(), cancel)
+                .await
+                .with_context(|| format!("downloading {path}"))?;
+            let d = done_ref.fetch_add(1, Ordering::Relaxed) + 1;
+            progress(d, total, format!("Downloaded {}", short_name(&path)));
+            Ok(())
+        });
     }
-    Ok(done as usize)
+    let mut results = stream::iter(futs).buffer_unordered(CONCURRENT_DOWNLOADS);
+
+    while let Some(res) = results.next().await {
+        // Returning drops the stream, which cancels the in-flight siblings.
+        res?;
+    }
+    Ok(done.load(Ordering::Relaxed) as usize)
 }
 
 /// Copy the `overrides/` and `client-overrides/` trees onto the instance root.
@@ -207,6 +234,7 @@ async fn download_verified(
     url: &str,
     dest: &Path,
     sha1: Option<&str>,
+    cancel: &CancelFlag,
 ) -> Result<()> {
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -221,6 +249,11 @@ async fn download_verified(
     let mut out = tokio::fs::File::create(&tmp).await?;
     let mut hasher = Sha1::new();
     while let Some(chunk) = resp.chunk().await? {
+        if cancel.load(Ordering::Relaxed) {
+            drop(out);
+            let _ = tokio::fs::remove_file(&tmp).await;
+            bail!("cancelled by user");
+        }
         hasher.update(&chunk);
         out.write_all(&chunk).await?;
     }

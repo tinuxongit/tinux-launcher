@@ -5,12 +5,44 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use serde::Deserialize;
 use sha1::{Digest, Sha1};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Semaphore;
+
+/// Shared cancel signal for an in-flight install. Set to true to make every
+/// pending and in-progress download bail out with a "cancelled by user" error.
+pub type CancelFlag = Arc<AtomicBool>;
+
+pub fn new_cancel_flag() -> CancelFlag {
+    Arc::new(AtomicBool::new(false))
+}
+
+pub fn is_cancel_error(error: &str) -> bool {
+    error.contains("cancelled by user")
+}
+
+/// How thoroughly existing files are checked before being trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyMode {
+    /// Existence + size check only. Used on the launch path so starting the
+    /// game doesn't re-hash thousands of asset files every time.
+    Fast,
+    /// Full SHA1 re-hash of every file (explicit installs and Verify Integrity).
+    Full,
+}
+
+/// What actually happened across a `run_jobs` pass.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RunSummary {
+    pub checked: usize,
+    /// Files that didn't exist and were downloaded.
+    pub missing: usize,
+    /// Files that existed but failed verification and were re-downloaded.
+    pub repaired: usize,
+}
 
 #[derive(Debug, Clone)]
 pub struct ProgressEvent {
@@ -72,11 +104,13 @@ pub async fn install_version(
     version_id: &str,
     version_url: &str,
     progress: &UnboundedSender<ProgressEvent>,
-) -> Result<InstallPlan> {
+    mode: VerifyMode,
+    cancel: &CancelFlag,
+) -> Result<(InstallPlan, RunSummary)> {
     let plan = build_plan(client, paths, version_id, version_url).await?;
-    run_jobs(client, &plan.jobs, progress).await?;
+    let summary = run_jobs(client, &plan.jobs, progress, mode, cancel).await?;
     materialize_resource_assets(paths, &plan).await?;
-    Ok(plan)
+    Ok((plan, summary))
 }
 
 async fn build_plan(
@@ -202,7 +236,7 @@ async fn materialize_resource_assets(paths: &Paths, plan: &InstallPlan) -> Resul
     for asset in &plan.resource_assets {
         let src = paths.asset_object(&asset.hash);
         let dest = resources.join(&asset.name);
-        if file_ok(&dest, Some(&asset.hash)).await? {
+        if dest.exists() && sha1_of_file(&dest).await? == asset.hash {
             continue;
         }
         ensure_parent(&dest)?;
@@ -223,14 +257,25 @@ fn job_for_artifact(a: &Artifact, dest: &Path) -> DownloadJob {
     }
 }
 
+/// Outcome of checking/fetching a single job, for the run summary.
+enum FileOutcome {
+    AlreadyOk,
+    FetchedMissing,
+    Repaired,
+}
+
 pub async fn run_jobs(
     client: &reqwest::Client,
     jobs: &[DownloadJob],
     progress: &UnboundedSender<ProgressEvent>,
-) -> Result<()> {
+    mode: VerifyMode,
+    cancel: &CancelFlag,
+) -> Result<RunSummary> {
     let total: u64 = jobs.iter().map(|j| j.size).sum();
     let done = Arc::new(AtomicU64::new(0));
     let counter = Arc::new(AtomicU64::new(0));
+    let missing = Arc::new(AtomicU64::new(0));
+    let repaired = Arc::new(AtomicU64::new(0));
     let count_total = jobs.len() as u64;
     let sem = Arc::new(Semaphore::new(16));
 
@@ -240,10 +285,24 @@ pub async fn run_jobs(
         let client = client.clone();
         let done = done.clone();
         let counter = counter.clone();
+        let missing = missing.clone();
+        let repaired = repaired.clone();
         let progress = progress.clone();
+        let cancel = cancel.clone();
         futs.push(tokio::spawn(async move {
-            let _permit = permit_sem.acquire_owned().await.unwrap();
-            let res = ensure_file(&client, &job).await;
+            let Ok(_permit) = permit_sem.acquire_owned().await else {
+                anyhow::bail!("download pool closed");
+            };
+            let res = ensure_file(&client, &job, mode, &cancel).await;
+            match &res {
+                Ok(FileOutcome::FetchedMissing) => {
+                    missing.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(FileOutcome::Repaired) => {
+                    repaired.fetch_add(1, Ordering::Relaxed);
+                }
+                _ => {}
+            }
             let n = counter.fetch_add(1, Ordering::Relaxed) + 1;
             let d = done.fetch_add(job.size, Ordering::Relaxed) + job.size;
             let _ = progress.send(ProgressEvent {
@@ -257,19 +316,44 @@ pub async fn run_jobs(
                         .unwrap_or_default()
                 ),
             });
-            res
+            res.map(|_| ())
         }));
     }
 
+    let mut first_err = None;
     while let Some(joined) = futs.next().await {
-        joined??;
+        let res = joined.map_err(anyhow::Error::from).and_then(|r| r);
+        if let Err(e) = res {
+            if first_err.is_none() {
+                // Stop the still-queued jobs instead of letting them keep
+                // downloading behind an error we've already reported.
+                cancel.store(true, Ordering::Relaxed);
+                first_err = Some(e);
+            }
+        }
     }
-    Ok(())
+    if let Some(e) = first_err {
+        return Err(e);
+    }
+    Ok(RunSummary {
+        checked: jobs.len(),
+        missing: missing.load(Ordering::Relaxed) as usize,
+        repaired: repaired.load(Ordering::Relaxed) as usize,
+    })
 }
 
-async fn ensure_file(client: &reqwest::Client, job: &DownloadJob) -> Result<()> {
-    if file_ok(&job.dest, job.sha1.as_deref()).await? {
-        return Ok(());
+async fn ensure_file(
+    client: &reqwest::Client,
+    job: &DownloadJob,
+    mode: VerifyMode,
+    cancel: &CancelFlag,
+) -> Result<FileOutcome> {
+    if cancel.load(Ordering::Relaxed) {
+        anyhow::bail!("cancelled by user");
+    }
+    let existed = job.dest.exists();
+    if existed && file_ok(&job.dest, job, mode).await? {
+        return Ok(FileOutcome::AlreadyOk);
     }
     ensure_parent(&job.dest)?;
     let tmp = job.dest.with_extension("part");
@@ -283,6 +367,11 @@ async fn ensure_file(client: &reqwest::Client, job: &DownloadJob) -> Result<()> 
     let mut file = fs::File::create(&tmp).await?;
     let mut hasher = Sha1::new();
     while let Some(chunk) = resp.chunk().await? {
+        if cancel.load(Ordering::Relaxed) {
+            drop(file);
+            let _ = fs::remove_file(&tmp).await;
+            anyhow::bail!("cancelled by user");
+        }
         hasher.update(&chunk);
         file.write_all(&chunk).await?;
     }
@@ -296,20 +385,37 @@ async fn ensure_file(client: &reqwest::Client, job: &DownloadJob) -> Result<()> 
         }
     }
     fs::rename(&tmp, &job.dest).await?;
-    Ok(())
+    Ok(if existed {
+        FileOutcome::Repaired
+    } else {
+        FileOutcome::FetchedMissing
+    })
 }
 
-async fn file_ok(p: &Path, expected_sha1: Option<&str>) -> Result<bool> {
-    if !p.exists() {
-        return Ok(false);
-    }
-    let Some(expected) = expected_sha1 else {
+/// Is an existing file trustworthy? Fast mode accepts any file whose size
+/// matches the manifest (or any file at all when the size is unknown);
+/// Full mode re-hashes the contents.
+async fn file_ok(p: &Path, job: &DownloadJob, mode: VerifyMode) -> Result<bool> {
+    let Some(expected) = job.sha1.as_deref() else {
         return Ok(true);
     };
+    match mode {
+        VerifyMode::Fast => {
+            if job.size == 0 {
+                return Ok(true);
+            }
+            let meta = fs::metadata(p).await?;
+            Ok(meta.len() == job.size)
+        }
+        VerifyMode::Full => Ok(sha1_of_file(p).await? == expected),
+    }
+}
+
+async fn sha1_of_file(p: &Path) -> Result<String> {
     let bytes = fs::read(p).await?;
     let mut h = Sha1::new();
     h.update(&bytes);
-    Ok(hex::encode(h.finalize()) == expected)
+    Ok(hex::encode(h.finalize()))
 }
 
 pub async fn extract_natives(natives_jars: &[PathBuf], dest: &Path) -> Result<()> {
@@ -341,9 +447,47 @@ fn extract_one(jar: &Path, dest: &Path) -> Result<()> {
         if !is_native {
             continue;
         }
-        let out = dest.join(std::path::Path::new(&name).file_name().unwrap());
+        let Some(fname) = std::path::Path::new(&name).file_name() else {
+            continue;
+        };
+        let out = dest.join(fname);
         let mut f = std::fs::File::create(&out)?;
         std::io::copy(&mut entry, &mut f)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn job_with(dest: PathBuf, sha1: &str, size: u64) -> DownloadJob {
+        DownloadJob {
+            url: String::new(),
+            dest,
+            sha1: Some(sha1.to_string()),
+            size,
+        }
+    }
+
+    #[tokio::test]
+    async fn fast_mode_trusts_size_full_mode_hashes() {
+        let dir = std::env::temp_dir().join("tinux-launcher-test-file-ok");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.bin");
+        std::fs::write(&p, b"hello").unwrap();
+
+        // Hash is wrong but size matches: Fast trusts it, Full rejects it.
+        let wrong_hash = job_with(p.clone(), "0000000000000000000000000000000000000000", 5);
+        assert!(file_ok(&p, &wrong_hash, VerifyMode::Fast).await.unwrap());
+        assert!(!file_ok(&p, &wrong_hash, VerifyMode::Full).await.unwrap());
+
+        // Size mismatch: Fast rejects too.
+        let wrong_size = job_with(p.clone(), "0000000000000000000000000000000000000000", 6);
+        assert!(!file_ok(&p, &wrong_size, VerifyMode::Fast).await.unwrap());
+
+        // Correct hash passes Full.
+        let right_hash = job_with(p.clone(), "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d", 5);
+        assert!(file_ok(&p, &right_hash, VerifyMode::Full).await.unwrap());
+    }
 }

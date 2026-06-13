@@ -162,7 +162,10 @@ pub async fn launch(
     cmd.arg(format!("-Xmx{}M", opts.max_ram_mb));
     cmd.arg(format!("-Djava.library.path={}", natives.display()));
     cmd.arg("-Dminecraft.launcher.brand=tinux-launcher");
-    cmd.arg("-Dminecraft.launcher.version=0.1.0");
+    cmd.arg(concat!(
+        "-Dminecraft.launcher.version=",
+        env!("CARGO_PKG_VERSION")
+    ));
 
     let ctx = ArgContext {
         auth_player_name: &opts.username,
@@ -178,7 +181,7 @@ pub async fn launch(
         version_type: details.kind.as_deref().unwrap_or("release"),
         natives_directory: &natives,
         launcher_name: "tinux-launcher",
-        launcher_version: "0.1.0",
+        launcher_version: env!("CARGO_PKG_VERSION"),
         classpath: &cp,
     };
 

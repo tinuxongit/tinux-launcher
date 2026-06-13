@@ -251,6 +251,9 @@ pub struct App {
     pub auth_device_code: Option<DeviceCodePrompt>,
 
     pub install: Option<InstallState>,
+    /// Cancel signal for the running install/verify, if any. Setting it makes
+    /// the worker bail out; cleared when the worker reports done/failed.
+    pub install_cancel: Option<crate::download::CancelFlag>,
     pub launch_state: LaunchState,
     pub launch_error: Option<String>,
 
@@ -344,6 +347,12 @@ pub struct App {
     pub modpack_instances: Vec<crate::config::ModpackInstance>,
     // Project id of the modpack currently downloading (drives the row cue).
     pub modpack_installing: Option<String>,
+    // Cancel signal for the running modpack install, if any.
+    pub modpack_cancel: Option<crate::download::CancelFlag>,
+    // Instance id awaiting removal confirmation. Removing an instance deletes
+    // its worlds, so a click on Remove only opens the dialog. Keyed by id (not
+    // index) so a registry reload while the dialog is open can't retarget it.
+    pub pending_modpack_removal: Option<String>,
 
     // The dedicated modpacks-only browser (opened from Versions ▸ Modpacks),
     // separate from the per-instance Content browser.
@@ -358,7 +367,7 @@ pub struct App {
 impl App {
     pub fn new(paths: Paths, worker_tx: UnboundedSender<WorkerMsg>) -> Self {
         let client = reqwest::Client::builder()
-            .user_agent("tinux-launcher/0.1")
+            .user_agent(concat!("tinux-launcher/", env!("CARGO_PKG_VERSION")))
             .pool_max_idle_per_host(16)
             .build()
             .expect("reqwest client");
@@ -461,6 +470,7 @@ impl App {
             auth_error: None,
             auth_device_code: None,
             install: None,
+            install_cancel: None,
             launch_state: LaunchState::Idle,
             launch_error: None,
             news: Vec::new(),
@@ -526,6 +536,8 @@ impl App {
             browser_tab_offset: 0,
             modpack_instances: crate::config::load_modpacks(),
             modpack_installing: None,
+            modpack_cancel: None,
+            pending_modpack_removal: None,
             modpack_browser_open: false,
             modpack_browse_version: None,
             version_picker_open: false,
@@ -915,14 +927,21 @@ impl App {
             }
             WorkerMsg::InstallDone(v) => {
                 self.install = None;
+                self.install_cancel = None;
                 self.status_message = format!("Installed {v}");
             }
             WorkerMsg::InstallFailed { version, error } => {
                 self.install = None;
-                self.status_message = format!("Install failed for {version}: {error}");
+                self.install_cancel = None;
+                self.status_message = if crate::download::is_cancel_error(&error) {
+                    format!("Install cancelled for {version}")
+                } else {
+                    format!("Install failed for {version}: {error}")
+                };
             }
             WorkerMsg::LaunchStarted(v) => {
                 self.launch_state = LaunchState::Running;
+                self.install_cancel = None;
                 self.status_message = format!("Launched {v}");
                 self.needs_clear = true;
             }
@@ -936,6 +955,7 @@ impl App {
             }
             WorkerMsg::LaunchFailed(e) => {
                 self.launch_state = LaunchState::Idle;
+                self.install_cancel = None;
                 self.launch_error = Some(e.clone());
                 self.status_message = format!("Launch failed: {e}");
                 self.needs_clear = true;
@@ -1155,14 +1175,24 @@ impl App {
                 // installs; clear it so the Play tab stops showing "Verifying..."
                 // and its progress bar after we're done.
                 self.install = None;
-                self.status_message = format!(
-                    "Verify {version}: {checked} files checked, {repaired} re-fetched, {missing} still missing"
-                );
+                self.install_cancel = None;
+                self.status_message = if repaired == 0 && missing == 0 {
+                    format!("Verify {version}: all {checked} files OK")
+                } else {
+                    format!(
+                        "Verify {version}: {checked} files checked, {repaired} corrupted repaired, {missing} missing re-fetched"
+                    )
+                };
             }
             WorkerMsg::VerifyFailed(e) => {
                 self.integrity_in_progress = false;
                 self.install = None;
-                self.status_message = format!("Verify failed: {e}");
+                self.install_cancel = None;
+                self.status_message = if crate::download::is_cancel_error(&e) {
+                    "Verification cancelled".into()
+                } else {
+                    format!("Verify failed: {e}")
+                };
             }
             WorkerMsg::ModpackInstallStarted(name) => {
                 // modpack_installing (the project id) is set by the trigger; here
@@ -1178,6 +1208,7 @@ impl App {
             }
             WorkerMsg::ModpackInstallDone(instance) => {
                 self.modpack_installing = None;
+                self.modpack_cancel = None;
                 self.modpack_instances = crate::config::load_modpacks();
                 self.status_message = format!(
                     "Installed modpack: {} — find it under Versions ▸ Modpacks",
@@ -1195,7 +1226,12 @@ impl App {
             }
             WorkerMsg::ModpackInstallFailed(error) => {
                 self.modpack_installing = None;
-                self.status_message = format!("Modpack install failed: {error}");
+                self.modpack_cancel = None;
+                self.status_message = if crate::download::is_cancel_error(&error) {
+                    "Modpack install cancelled".into()
+                } else {
+                    format!("Modpack install failed: {error}")
+                };
             }
         }
     }

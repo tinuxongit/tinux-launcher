@@ -387,7 +387,11 @@ fn handle_key(app: &mut App, k: KeyEvent) {
 
     match k.code {
         // Esc dismisses the topmost modal first (matches visual z-order in ui::draw):
-        // info_popup > update_modal > filters_popup > mod_browser > article > tab default.
+        // remove-confirm > info_popup > update_modal > filters_popup > mod_browser >
+        // article > tab default.
+        KeyCode::Esc if app.pending_modpack_removal.is_some() => {
+            app.pending_modpack_removal = None;
+        }
         KeyCode::Esc if app.info_popup.is_some() => {
             app.info_popup = None;
         }
@@ -746,7 +750,33 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             app.browser_tab_offset = (app.browser_tab_offset + 1).min(max);
         }
         Hit::RemoveModpack(i) => {
-            trigger_remove_modpack(app, i);
+            // Deleting an instance also deletes the worlds inside it, so the
+            // click only opens the confirmation dialog.
+            if let Some(m) = app.modpack_instances.get(i) {
+                app.pending_modpack_removal = Some(m.id.clone());
+            }
+        }
+        Hit::ConfirmRemoveModpack => {
+            if let Some(id) = app.pending_modpack_removal.take() {
+                if let Some(i) = app.modpack_instances.iter().position(|m| m.id == id) {
+                    trigger_remove_modpack(app, i);
+                }
+            }
+        }
+        Hit::CancelRemoveModpack => {
+            app.pending_modpack_removal = None;
+        }
+        Hit::CancelInstallButton => {
+            if let Some(flag) = &app.install_cancel {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                app.status_message = "Cancelling...".into();
+            }
+        }
+        Hit::CancelModpackInstall => {
+            if let Some(flag) = &app.modpack_cancel {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                app.status_message = "Cancelling modpack install...".into();
+            }
         }
         Hit::ShowMoreModsButton => {
             trigger_mod_search(app, true);
@@ -1050,8 +1080,10 @@ fn trigger_install(app: &mut App) {
     let client = app.client.clone();
     let paths_clone = clone_paths(&app.paths);
     let tx = app.worker_tx.clone();
+    let cancel = download::new_cancel_flag();
+    app.install_cancel = Some(cancel.clone());
     tokio::spawn(async move {
-        worker::do_install(client, paths_clone, entry, tx).await;
+        worker::do_install(client, paths_clone, entry, cancel, tx).await;
     });
 }
 
@@ -1071,9 +1103,11 @@ fn trigger_install_fabric(app: &mut App) {
     let client = app.client.clone();
     let paths_clone = clone_paths(&app.paths);
     let tx = app.worker_tx.clone();
+    let cancel = download::new_cancel_flag();
+    app.install_cancel = Some(cancel.clone());
     app.status_message = format!("Installing Fabric {loader} for {mc}...");
     tokio::spawn(async move {
-        worker::do_install_fabric(client, paths_clone, manifest, mc, loader, tx).await;
+        worker::do_install_fabric(client, paths_clone, manifest, mc, loader, cancel, tx).await;
     });
 }
 
@@ -1116,6 +1150,7 @@ fn trigger_launch(app: &mut App) {
     let client = app.client.clone();
     let paths_clone = clone_paths(&app.paths);
     let tx = app.worker_tx.clone();
+    let cancel = download::new_cancel_flag();
 
     if app.selected_kind == app::VersionFilter::Modded {
         let Some(mc) = app.selected_version.clone() else {
@@ -1131,9 +1166,10 @@ fn trigger_launch(app: &mut App) {
             return;
         };
         config::save_last_played(&mc, app.selected_kind.as_str());
+        app.install_cancel = Some(cancel.clone());
         tokio::spawn(async move {
             worker::do_install_and_launch_fabric(
-                client, paths_clone, manifest, mc, loader, java, opts, tx,
+                client, paths_clone, manifest, mc, loader, java, opts, cancel, tx,
             )
             .await;
         });
@@ -1156,8 +1192,10 @@ fn trigger_launch(app: &mut App) {
             sha1: String::new(),
             release_time: String::new(),
         };
+        app.install_cancel = Some(cancel.clone());
         tokio::spawn(async move {
-            worker::do_install_and_launch(client, paths_clone, entry, java, opts, tx).await;
+            worker::do_install_and_launch(client, paths_clone, entry, java, opts, cancel, tx)
+                .await;
         });
         return;
     }
@@ -1167,8 +1205,9 @@ fn trigger_launch(app: &mut App) {
         return;
     };
     config::save_last_played(&entry.id, app.selected_kind.as_str());
+    app.install_cancel = Some(cancel.clone());
     tokio::spawn(async move {
-        worker::do_install_and_launch(client, paths_clone, entry, java, opts, tx).await;
+        worker::do_install_and_launch(client, paths_clone, entry, java, opts, cancel, tx).await;
     });
 }
 
@@ -1349,10 +1388,13 @@ fn trigger_modpack_install(app: &mut App, idx: usize) {
     let name = hit.title.clone();
     // Store the project id so the result row's download cue matches it.
     app.modpack_installing = Some(project_id.clone());
+    let cancel = download::new_cancel_flag();
+    app.modpack_cancel = Some(cancel.clone());
     let _ = tx.send(event::WorkerMsg::ModpackInstallStarted(name.clone()));
     app.status_message = format!("Installing modpack: {name}");
     tokio::spawn(async move {
-        worker::do_install_modpack(client, paths_clone, manifest, mc, project_id, name, tx).await;
+        worker::do_install_modpack(client, paths_clone, manifest, mc, project_id, name, cancel, tx)
+            .await;
     });
 }
 
@@ -1773,8 +1815,10 @@ fn trigger_verify_integrity(app: &mut App) {
     let client = app.client.clone();
     let paths_clone = clone_paths(&app.paths);
     let tx = app.worker_tx.clone();
+    let cancel = download::new_cancel_flag();
+    app.install_cancel = Some(cancel.clone());
     tokio::spawn(async move {
-        worker::do_verify_integrity(client, paths_clone, entry, tx).await;
+        worker::do_verify_integrity(client, paths_clone, entry, cancel, tx).await;
     });
 }
 

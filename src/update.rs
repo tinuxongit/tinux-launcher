@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -107,14 +108,19 @@ fn asset_for_current_platform(tag: &str) -> Option<ReleaseAsset> {
     })
 }
 
-/// Download `asset` to a temp file. Streams progress through `tx`.
-/// Returns the path of the downloaded file.
+/// Download `asset` to a temp file, verifying it against the `.sha256`
+/// checksum published alongside it in the release. Streams progress through
+/// `tx`. Returns the path of the downloaded file.
 pub async fn download_asset(
     client: &reqwest::Client,
     asset: &ReleaseAsset,
     cache_dir: &Path,
     tx: UnboundedSender<WorkerMsg>,
 ) -> Result<PathBuf> {
+    // Fetch the expected checksum first so a release without one fails fast,
+    // before we spend time on the binary itself.
+    let expected = fetch_expected_sha256(client, &asset.url).await?;
+
     fs::create_dir_all(cache_dir).await?;
     let dest = cache_dir.join(format!("update-{}", asset.name));
     let tmp = dest.with_extension("part");
@@ -127,13 +133,25 @@ pub async fn download_asset(
     let total = resp.content_length().unwrap_or(asset.size);
     let done = Arc::new(AtomicU64::new(0));
     let mut file = fs::File::create(&tmp).await?;
+    let mut hasher = Sha256::new();
     while let Some(chunk) = resp.chunk().await? {
+        hasher.update(&chunk);
         file.write_all(&chunk).await?;
         let d = done.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
         let _ = tx.send(WorkerMsg::UpdateDownloadProgress { done: d, total });
     }
     file.flush().await?;
     drop(file);
+
+    let got = hex::encode(hasher.finalize());
+    if got != expected {
+        let _ = fs::remove_file(&tmp).await;
+        anyhow::bail!(
+            "update checksum mismatch for {}: got {got}, want {expected}; refusing to install",
+            asset.name
+        );
+    }
+
     if let Err(e) = fs::rename(&tmp, &dest).await {
         // On Windows, rename can fail if dest exists; try remove + retry.
         let _ = fs::remove_file(&dest).await;
@@ -142,6 +160,32 @@ pub async fn download_asset(
             .with_context(|| format!("renaming downloaded update: {e}"))?;
     }
     Ok(dest)
+}
+
+/// Fetch and parse the `<asset>.sha256` sidecar (sha256sum format: the hex
+/// digest is the first whitespace-separated token).
+async fn fetch_expected_sha256(client: &reqwest::Client, asset_url: &str) -> Result<String> {
+    let url = format!("{asset_url}.sha256");
+    let text = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("downloading checksum {url}"))?
+        .error_for_status()
+        .context(
+            "release has no .sha256 checksum for this asset; refusing to install an unverified update",
+        )?
+        .text()
+        .await?;
+    let hex = text
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow!("empty checksum file at {url}"))?
+        .to_ascii_lowercase();
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        anyhow::bail!("malformed checksum file at {url}");
+    }
+    Ok(hex)
 }
 
 /// Hand off to a small helper that swaps the binary and relaunches.

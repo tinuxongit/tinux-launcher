@@ -98,6 +98,10 @@ pub enum Hit {
     VersionPickerField,
     VersionPickerRow(usize),
     VersionPickerScrollbar,
+    CancelInstallButton,
+    CancelModpackInstall,
+    ConfirmRemoveModpack,
+    CancelRemoveModpack,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

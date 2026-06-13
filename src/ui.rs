@@ -1,5 +1,5 @@
 use crate::app::{
-    AccountMode, App, ContentKind, Focus, InstallState, LaunchState, ModLoader, SkinModel,
+    AccountMode, App, ContentKind, Focus, LaunchState, ModLoader, SkinModel,
     UpdateStatus, VersionFilter,
 };
 use crate::modrinth::SearchHit;
@@ -97,6 +97,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.info_popup.is_some() {
         draw_info_popup(f, app, frame);
+    }
+    if app.pending_modpack_removal.is_some() {
+        draw_remove_modpack_modal(f, app, frame);
     }
     if app.auth_device_code.is_some() {
         draw_device_code_modal(f, app, frame);
@@ -523,6 +526,109 @@ fn draw_info_popup(f: &mut Frame, app: &mut App, area: Rect) {
     draw_button(f, app, cols[1], "OK", Hit::DismissInfoPopup, true);
 }
 
+/// Confirmation dialog before deleting a modpack instance. Deleting the
+/// instance folder takes its worlds with it, so this is the one destructive
+/// action in the launcher that demands an explicit yes.
+fn draw_remove_modpack_modal(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(id) = app.pending_modpack_removal.clone() else {
+        return;
+    };
+    let Some(instance) = app.modpack_instances.iter().find(|m| m.id == id) else {
+        app.pending_modpack_removal = None;
+        return;
+    };
+    let name = instance.name.clone();
+    let message = format!(
+        "Remove \"{name}\" and delete its instance folder?\n\nEverything inside it is deleted too: worlds, settings, and installed mods. This cannot be undone."
+    );
+    let w = 60u16.min(area.width.saturating_sub(4));
+    let text_w = w.saturating_sub(6) as usize;
+    let wrapped_lines: u16 = message
+        .lines()
+        .map(|l| {
+            let chars = l.chars().count();
+            if chars == 0 {
+                1
+            } else {
+                chars.div_ceil(text_w).max(1) as u16
+            }
+        })
+        .sum();
+    let h = (wrapped_lines + 8).min(area.height.saturating_sub(4)).max(8);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let rect = Rect::new(x, y, w, h);
+
+    f.render_widget(Fill { style: theme::base() }, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::RED))
+        .style(theme::base())
+        .title(Span::styled(
+            " Remove modpack? ",
+            Style::default().fg(theme::RED).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect).inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    f.render_widget(block, rect);
+
+    let text_h = inner.height.saturating_sub(BUTTON_H + 1);
+    f.render_widget(
+        Paragraph::new(message)
+            .style(theme::base())
+            .wrap(Wrap { trim: true }),
+        Rect::new(inner.x, inner.y, inner.width, text_h),
+    );
+
+    let btn_y = inner.y + inner.height.saturating_sub(BUTTON_H);
+    let btn_row = Rect::new(inner.x, btn_y, inner.width, BUTTON_H);
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(14),
+            Constraint::Length(2),
+            Constraint::Length(14),
+            Constraint::Min(0),
+        ])
+        .split(btn_row);
+    draw_danger_button(f, app, cols[1], "Remove", Hit::ConfirmRemoveModpack);
+    draw_button(f, app, cols[3], "Keep", Hit::CancelRemoveModpack, false);
+}
+
+fn draw_danger_button(f: &mut Frame, app: &mut App, rect: Rect, label: &str, hit: Hit) {
+    let hovered = app.hover == Some(hit);
+    let border_fg = if hovered { theme::RED } else { theme::BORDER };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_fg).bg(theme::BG));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mid = inner.height / 2;
+    let styled = Span::styled(
+        label,
+        Style::default()
+            .fg(theme::RED)
+            .bg(theme::BG)
+            .add_modifier(Modifier::BOLD),
+    );
+    let lines: Vec<Line> = (0..inner.height)
+        .map(|i| if i == mid { Line::from(vec![styled.clone()]) } else { Line::from("") })
+        .collect();
+    f.render_widget(
+        Paragraph::new(lines)
+            .style(theme::base())
+            .alignment(Alignment::Center),
+        inner,
+    );
+    app.click_regions.push((rect, hit));
+}
+
 fn update_modal_visible(app: &App) -> bool {
     if app.update_modal_dismissed {
         return false;
@@ -939,23 +1045,33 @@ fn draw_offline_name(f: &mut Frame, app: &mut App, rect: Rect) {
     app.click_regions.push((rect, Hit::OfflineNameField));
 }
 
-fn draw_progress(f: &mut Frame, app: &App, area: Rect) {
-    let Some(state) = &app.install else {
-        let hint = if app.launch_state == LaunchState::Running {
-            "Minecraft is running..."
-        } else {
-            ""
-        };
-        f.render_widget(Paragraph::new(hint).style(theme::dim()), area);
-        return;
+fn draw_progress(f: &mut Frame, app: &mut App, area: Rect) {
+    let (done, total, what) = match &app.install {
+        Some(state) => (state.done, state.total, state.what.clone()),
+        None => {
+            let hint = if app.launch_state == LaunchState::Running {
+                "Minecraft is running..."
+            } else {
+                ""
+            };
+            f.render_widget(Paragraph::new(hint).style(theme::dim()), area);
+            return;
+        }
     };
-    let InstallState { done, total, what, .. } = state;
-    let pct = if *total == 0 {
+    let pct = if total == 0 {
         0.0
     } else {
-        (*done as f64 / *total as f64).clamp(0.0, 1.0)
+        (done as f64 / total as f64).clamp(0.0, 1.0)
     };
-    let width = area.width.saturating_sub(2) as usize;
+    // Leave room at the right edge of the bar row for the cancel control.
+    let cancel_label = "✕ Cancel";
+    let cancel_w = cancel_label.chars().count() as u16;
+    let can_cancel = app.install_cancel.is_some() && area.width > cancel_w + 16;
+    let width = if can_cancel {
+        area.width.saturating_sub(cancel_w + 9)
+    } else {
+        area.width.saturating_sub(2)
+    } as usize;
     let filled = (pct * width as f64).round() as usize;
     let bar: String = std::iter::repeat('█')
         .take(filled)
@@ -966,11 +1082,22 @@ fn draw_progress(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(" "),
         Span::styled(format!("{:.0}%", pct * 100.0), theme::accent_bold()),
     ]);
-    let line2 = Line::from(vec![Span::styled(what.clone(), theme::dim())]);
+    let line2 = Line::from(vec![Span::styled(what, theme::dim())]);
     f.render_widget(
         Paragraph::new(vec![line1, line2]).style(theme::base()),
         area,
     );
+    if can_cancel {
+        let rect = Rect::new(area.x + area.width - cancel_w - 1, area.y, cancel_w + 1, 1);
+        let hovered = app.hover == Some(Hit::CancelInstallButton);
+        let style = if hovered {
+            Style::default().fg(theme::RED).bg(theme::BG).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::FG_DIM).bg(theme::BG)
+        };
+        f.render_widget(Paragraph::new(format!(" {cancel_label}")).style(style), rect);
+        app.click_regions.push((rect, Hit::CancelInstallButton));
+    }
 }
 
 fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
@@ -2147,7 +2274,7 @@ fn draw_button(
     app.click_regions.push((rect, hit));
 }
 
-fn draw_status(f: &mut Frame, app: &App, area: Rect) {
+fn draw_status(f: &mut Frame, app: &mut App, area: Rect) {
     let java = match &app.java {
         Some(j) => format!("Java {}", j.major),
         None => "no Java".into(),
@@ -2170,6 +2297,24 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(app.status_message.clone(), theme::dim()),
     ]);
     f.render_widget(Paragraph::new(line).style(theme::base()), area);
+
+    // A modpack install reports progress through this status line, so its
+    // cancel control lives here too (visible from any tab).
+    if app.modpack_cancel.is_some() {
+        let label = " ✕ Cancel install ";
+        let w = label.chars().count() as u16;
+        if area.width > w + 4 {
+            let rect = Rect::new(area.x + area.width - w, area.y, w, 1);
+            let hovered = app.hover == Some(Hit::CancelModpackInstall);
+            let style = if hovered {
+                Style::default().fg(theme::RED).bg(theme::BG).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::FG_DIM).bg(theme::BG)
+            };
+            f.render_widget(Paragraph::new(label).style(style), rect);
+            app.click_regions.push((rect, Hit::CancelModpackInstall));
+        }
+    }
 }
 
 fn draw_article(f: &mut Frame, app: &mut App, area: Rect) {

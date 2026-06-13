@@ -1,4 +1,4 @@
-use crate::download::{install_version, ProgressEvent};
+use crate::download::{install_version, CancelFlag, ProgressEvent, VerifyMode};
 use crate::event::{InstallKind, WorkerMsg};
 use crate::fabric;
 use crate::java::{self, JavaInstall};
@@ -14,6 +14,7 @@ pub async fn do_install(
     client: reqwest::Client,
     paths: Paths,
     entry: ManifestVersion,
+    cancel: CancelFlag,
     tx: UnboundedSender<WorkerMsg>,
 ) {
     let version_id = entry.id.clone();
@@ -30,7 +31,17 @@ pub async fn do_install(
         }
     });
 
-    let result = install_version(&client, &paths, &entry.id, &entry.url, &prog_tx).await;
+    // Explicit installs do a full hash pass so they double as a repair.
+    let result = install_version(
+        &client,
+        &paths,
+        &entry.id,
+        &entry.url,
+        &prog_tx,
+        VerifyMode::Full,
+        &cancel,
+    )
+    .await;
     drop(prog_tx);
     let _ = forwarder.await;
     match result {
@@ -52,6 +63,7 @@ pub async fn do_install_and_launch(
     entry: ManifestVersion,
     java: JavaInstall,
     opts: LaunchOptions,
+    cancel: CancelFlag,
     tx: UnboundedSender<WorkerMsg>,
 ) {
     let version_id = entry.id.clone();
@@ -74,11 +86,23 @@ pub async fn do_install_and_launch(
         }
     });
 
-    let result = install_version(&client, &paths, &entry.id, &entry.url, &prog_tx).await;
+    // Fast verification on the launch path: trust existing files by size so
+    // starting the game doesn't re-hash every asset. The Verify Integrity
+    // button still does the full pass.
+    let result = install_version(
+        &client,
+        &paths,
+        &entry.id,
+        &entry.url,
+        &prog_tx,
+        VerifyMode::Fast,
+        &cancel,
+    )
+    .await;
     drop(prog_tx);
     let _ = forwarder.await;
     let plan = match result {
-        Ok(p) => p,
+        Ok((p, _)) => p,
         Err(e) => {
             let _ = tx.send(WorkerMsg::InstallFailed {
                 version: version_id,
@@ -178,6 +202,7 @@ pub async fn do_install_fabric(
     manifest: Arc<VersionManifest>,
     mc_version: String,
     loader_version: String,
+    cancel: CancelFlag,
     tx: UnboundedSender<WorkerMsg>,
 ) {
     let fabric_id = match fabric::prepare_fabric_version(
@@ -212,7 +237,16 @@ pub async fn do_install_fabric(
         }
     });
 
-    let result = install_version(&client, &paths, &fabric_id, "", &prog_tx).await;
+    let result = install_version(
+        &client,
+        &paths,
+        &fabric_id,
+        "",
+        &prog_tx,
+        VerifyMode::Full,
+        &cancel,
+    )
+    .await;
     drop(prog_tx);
     let _ = forwarder.await;
     match result {
@@ -228,6 +262,7 @@ pub async fn do_install_fabric(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn do_install_and_launch_fabric(
     client: reqwest::Client,
     paths: Paths,
@@ -236,6 +271,7 @@ pub async fn do_install_and_launch_fabric(
     loader_version: String,
     java: JavaInstall,
     opts: LaunchOptions,
+    cancel: CancelFlag,
     tx: UnboundedSender<WorkerMsg>,
 ) {
     let fabric_id = match fabric::prepare_fabric_version(
@@ -260,7 +296,7 @@ pub async fn do_install_and_launch_fabric(
         sha1: String::new(),
         release_time: String::new(),
     };
-    do_install_and_launch(client, paths, entry, java, opts, tx).await;
+    do_install_and_launch(client, paths, entry, java, opts, cancel, tx).await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -271,6 +307,7 @@ pub async fn do_install_modpack(
     browse_mc_version: String,
     project_id: String,
     name: String,
+    cancel: CancelFlag,
     tx: UnboundedSender<WorkerMsg>,
 ) {
     match install_modpack_inner(
@@ -280,6 +317,7 @@ pub async fn do_install_modpack(
         &browse_mc_version,
         &project_id,
         &name,
+        &cancel,
         &tx,
     )
     .await
@@ -301,6 +339,7 @@ async fn install_modpack_inner(
     browse_mc_version: &str,
     project_id: &str,
     name: &str,
+    cancel: &CancelFlag,
     tx: &UnboundedSender<WorkerMsg>,
 ) -> anyhow::Result<crate::config::ModpackInstance> {
     let progress = |done: u64, total: u64, what: &str| {
@@ -332,6 +371,10 @@ async fn install_modpack_inner(
                 file.filename
             );
         }
+    }
+
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        anyhow::bail!("cancelled by user");
     }
 
     // 2. Parse + Fabric-only gate.
@@ -368,15 +411,25 @@ async fn install_modpack_inner(
             });
         }
     });
-    let runtime = install_version(client, paths, &id, "", &prog_tx).await;
+    let runtime = install_version(
+        client,
+        paths,
+        &id,
+        "",
+        &prog_tx,
+        VerifyMode::Fast,
+        cancel,
+    )
+    .await;
     drop(prog_tx);
     let _ = forwarder.await;
     runtime?;
 
     // 4. Download the modpack's files into its instance dir.
     let instance_dir = paths.instances.join(&id);
-    crate::modpack::install_files(client, &index, &instance_dir, |done, total, what| {
-        let _ = tx.send(WorkerMsg::ModpackInstallProgress { done, total, what });
+    let progress_tx = tx.clone();
+    crate::modpack::install_files(client, &index, &instance_dir, cancel, move |done, total, what| {
+        let _ = progress_tx.send(WorkerMsg::ModpackInstallProgress { done, total, what });
     })
     .await?;
 
@@ -403,6 +456,7 @@ pub async fn do_verify_integrity(
     client: reqwest::Client,
     paths: Paths,
     entry: ManifestVersion,
+    cancel: CancelFlag,
     tx: UnboundedSender<WorkerMsg>,
 ) {
     let version_id = entry.id.clone();
@@ -421,17 +475,25 @@ pub async fn do_verify_integrity(
     // install_version is idempotent: it re-downloads anything whose sha1
     // doesn't match, so calling it on an already-installed version is the
     // same operation as "verify integrity".
-    let result = install_version(&client, &paths, &entry.id, &entry.url, &prog_tx).await;
+    let result = install_version(
+        &client,
+        &paths,
+        &entry.id,
+        &entry.url,
+        &prog_tx,
+        VerifyMode::Full,
+        &cancel,
+    )
+    .await;
     drop(prog_tx);
     let _ = forwarder.await;
     match result {
-        Ok(plan) => {
-            let checked = plan.jobs.len();
+        Ok((_, summary)) => {
             let _ = tx.send(WorkerMsg::VerifyDone {
                 version: version_id,
-                checked,
-                repaired: 0,
-                missing: 0,
+                checked: summary.checked,
+                repaired: summary.repaired,
+                missing: summary.missing,
             });
         }
         Err(e) => {

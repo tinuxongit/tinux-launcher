@@ -74,7 +74,7 @@ pub fn client_id() -> Option<String> {
 pub async fn interactive_login(tx: UnboundedSender<WorkerMsg>) -> Result<Account> {
     let client_id = client_id().ok_or_else(|| anyhow!("no client id configured"))?;
     let http = reqwest::Client::builder()
-        .user_agent("tinux-launcher/0.1")
+        .user_agent(concat!("tinux-launcher/", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     let device = request_device_code(&http, &client_id).await?;
@@ -223,7 +223,7 @@ pub async fn try_refresh_session() -> Result<Account> {
     }
 
     let http = reqwest::Client::builder()
-        .user_agent("tinux-launcher/0.1")
+        .user_agent(concat!("tinux-launcher/", env!("CARGO_PKG_VERSION")))
         .build()?;
     let resp = http
         .post(format!("{AUTH_BASE}/token"))
