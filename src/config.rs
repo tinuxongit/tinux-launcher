@@ -33,6 +33,9 @@ pub struct Config {
     /// A value here wins over `java_path` and over auto-detection.
     #[serde(default)]
     pub java_path_per_version: HashMap<String, String>,
+    /// Mod loader selected on the Modded tab: "fabric" | "neoforge" | "forge".
+    #[serde(default)]
+    pub loader: Option<String>,
 }
 
 impl Config {
@@ -56,6 +59,10 @@ pub struct ModpackInstance {
     pub modpack_version: String,
     #[serde(default)]
     pub project_id: String,
+    /// "fabric" | "forge" | "neoforge". Empty in registries written before
+    /// loader support landed; those were all Fabric.
+    #[serde(default)]
+    pub loader: String,
 }
 
 fn modpacks_path() -> Option<PathBuf> {
@@ -126,6 +133,10 @@ pub fn save_selection(filter: &str, version: &str) {
 
 pub fn save_active_filter(filter: &str) {
     update(|c| c.last_filter = Some(filter.to_string()));
+}
+
+pub fn save_loader(loader: &str) {
+    update(|c| c.loader = Some(loader.to_string()));
 }
 
 pub fn save_version_toggles(show_snapshots: bool, show_older: bool) {

@@ -33,9 +33,13 @@ fn pick_game_dir(paths: &Paths, plan: &InstallPlan) -> std::path::PathBuf {
 }
 
 fn is_modded_id(id: &str) -> bool {
-    // Synthetic ids we generate for mod-loader installs and modpack instances.
-    // Both get their own per-instance game dir under `instances/<id>/`.
-    id.starts_with("fabric-loader-") || id.starts_with("modpack-")
+    // Synthetic ids for mod-loader installs and modpack instances. All get
+    // their own per-instance game dir under `instances/<id>/`. Forge ids look
+    // like `1.20.1-forge-47.3.0`, NeoForge like `neoforge-21.1.77`.
+    id.starts_with("fabric-loader-")
+        || id.starts_with("modpack-")
+        || id.starts_with("neoforge-")
+        || id.contains("-forge-")
 }
 
 /// One-time copy from a pre-shared-.minecraft instance dir into the shared
@@ -183,6 +187,8 @@ pub async fn launch(
         launcher_name: "tinux-launcher",
         launcher_version: env!("CARGO_PKG_VERSION"),
         classpath: &cp,
+        library_directory: &paths.libraries,
+        classpath_separator: CLASSPATH_SEP,
     };
 
     if let Some(args) = &details.arguments {
@@ -253,6 +259,9 @@ struct ArgContext<'a> {
     launcher_name: &'a str,
     launcher_version: &'a str,
     classpath: &'a str,
+    // Forge/NeoForge build their module path from these in JVM args.
+    library_directory: &'a Path,
+    classpath_separator: &'a str,
 }
 
 fn push_arg(cmd: &mut Command, entry: &ArgEntry, ctx: &ArgContext<'_>) {
@@ -280,7 +289,12 @@ fn push_arg(cmd: &mut Command, entry: &ArgEntry, ctx: &ArgContext<'_>) {
 
 fn substitute(s: &str, ctx: &ArgContext<'_>) -> String {
     let mut out = s.to_string();
-    let replacements: [(&str, String); 14] = [
+    let replacements: [(&str, String); 16] = [
+        (
+            "${library_directory}",
+            ctx.library_directory.display().to_string(),
+        ),
+        ("${classpath_separator}", ctx.classpath_separator.into()),
         ("${auth_player_name}", ctx.auth_player_name.into()),
         ("${version_name}", ctx.version_name.into()),
         ("${game_directory}", ctx.game_dir.display().to_string()),

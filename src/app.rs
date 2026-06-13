@@ -43,33 +43,51 @@ impl VersionFilter {
         })
     }
 
-    /// Short loader name to show next to the selected MC version in the
-    /// header. `None` means vanilla — no suffix needed. Future loaders
-    /// (Forge, NeoForge, Quilt, ...) plug in here.
-    pub fn loader_label(self) -> Option<&'static str> {
-        match self {
-            VersionFilter::Releases => None,
-            VersionFilter::Modded => Some("Fabric"),
-            VersionFilter::Modpacks => Some("Modpack"),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModLoader {
     Fabric,
+    NeoForge,
+    Forge,
 }
 
 impl ModLoader {
     pub fn label(self) -> &'static str {
         match self {
             ModLoader::Fabric => "Fabric",
+            ModLoader::NeoForge => "NeoForge",
+            ModLoader::Forge => "Forge",
         }
     }
 
     pub fn modrinth_key(self) -> &'static str {
         match self {
             ModLoader::Fabric => "fabric",
+            ModLoader::NeoForge => "neoforge",
+            ModLoader::Forge => "forge",
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        self.modrinth_key()
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "fabric" => ModLoader::Fabric,
+            "neoforge" => ModLoader::NeoForge,
+            "forge" => ModLoader::Forge,
+            _ => return None,
+        })
+    }
+
+    /// Next loader in the Modded tab's cycle control.
+    pub fn cycle(self) -> Self {
+        match self {
+            ModLoader::Fabric => ModLoader::NeoForge,
+            ModLoader::NeoForge => ModLoader::Forge,
+            ModLoader::Forge => ModLoader::Fabric,
         }
     }
 }
@@ -304,6 +322,9 @@ pub struct App {
     pub loader: ModLoader,
     pub fabric_loaders: Vec<String>,
     pub fabric_mc_versions: Vec<String>,
+    /// MC version -> loader build to install, per loader (fetched at startup).
+    pub forge_versions: std::collections::HashMap<String, String>,
+    pub neoforge_versions: std::collections::HashMap<String, String>,
 
     pub mod_browser_open: bool,
     pub browser_kind: ContentKind,
@@ -423,6 +444,10 @@ impl App {
             .as_ref()
             .map(|c| c.java_path_per_version.clone())
             .unwrap_or_default();
+        let saved_loader = cfg_opt
+            .as_ref()
+            .and_then(|c| c.loader.as_deref().and_then(ModLoader::parse))
+            .unwrap_or(ModLoader::Fabric);
         Self {
             running: true,
             relaunch_exe: None,
@@ -503,9 +528,11 @@ impl App {
             last_size: Rect::default(),
             update_status: UpdateStatus::Idle,
             update_modal_dismissed: false,
-            loader: ModLoader::Fabric,
+            loader: saved_loader,
             fabric_loaders: Vec::new(),
             fabric_mc_versions: Vec::new(),
+            forge_versions: std::collections::HashMap::new(),
+            neoforge_versions: std::collections::HashMap::new(),
             mod_browser_open: false,
             browser_kind: ContentKind::Mods,
             mod_search_query: String::new(),
@@ -593,22 +620,30 @@ impl App {
                 .filter(|v| include_kind(v.kind))
                 .collect(),
             VersionFilter::Modded => {
-                // Fabric supports stable releases and many snapshots, but no
-                // pre-1.13 versions, so the Older toggle is no-op here.
-                if self.fabric_mc_versions.is_empty() {
-                    m.versions
-                        .iter()
-                        .filter(|v| include_kind(v.kind))
-                        .collect()
-                } else {
-                    m.versions
-                        .iter()
-                        .filter(|v| {
-                            include_kind(v.kind)
-                                && self.fabric_mc_versions.iter().any(|s| s == &v.id)
-                        })
-                        .collect()
-                }
+                // Intersect the manifest with the active loader's supported
+                // set. An empty set means "still loading"; show everything
+                // rather than nothing. (No loader ships for pre-1.13, so the
+                // Older toggle is a no-op here.)
+                let supported = |id: &str| -> bool {
+                    match self.loader {
+                        ModLoader::Fabric => {
+                            self.fabric_mc_versions.is_empty()
+                                || self.fabric_mc_versions.iter().any(|s| s == id)
+                        }
+                        ModLoader::NeoForge => {
+                            self.neoforge_versions.is_empty()
+                                || self.neoforge_versions.contains_key(id)
+                        }
+                        ModLoader::Forge => {
+                            self.forge_versions.is_empty()
+                                || self.forge_versions.contains_key(id)
+                        }
+                    }
+                };
+                m.versions
+                    .iter()
+                    .filter(|v| include_kind(v.kind) && supported(&v.id))
+                    .collect()
             }
         }
     }
@@ -854,10 +889,56 @@ impl App {
 
     pub fn modded_id_for(&self, mc_id: &str) -> Option<String> {
         // Same construction as selected_modded_id(); kept as a separate entry
-        // point so callers can build the fabric id for an arbitrary mc id
+        // point so callers can build the modded id for an arbitrary mc id
         // (e.g. for the installed-check on every row of the modded list).
-        let loader = self.latest_stable_fabric_loader()?;
-        Some(format!("fabric-loader-{loader}-{mc_id}"))
+        match self.loader {
+            ModLoader::Fabric => {
+                let loader = self.latest_stable_fabric_loader()?;
+                Some(format!("fabric-loader-{loader}-{mc_id}"))
+            }
+            ModLoader::NeoForge => {
+                let v = self.neoforge_versions.get(mc_id)?;
+                Some(crate::forge::version_id(
+                    crate::forge::ForgeKind::NeoForge,
+                    mc_id,
+                    v,
+                ))
+            }
+            ModLoader::Forge => {
+                let v = self.forge_versions.get(mc_id)?;
+                Some(crate::forge::version_id(
+                    crate::forge::ForgeKind::Forge,
+                    mc_id,
+                    v,
+                ))
+            }
+        }
+    }
+
+    /// The Modrinth loader facet for whatever is currently selected: modpack
+    /// instances carry their own loader; otherwise the Modded tab's pick.
+    pub fn effective_loader_key(&self) -> String {
+        if let Some(sel) = &self.selected_version {
+            if let Some(mp) = self.modpack_by_id(sel) {
+                return match mp.loader.as_str() {
+                    "forge" => "forge".to_string(),
+                    "neoforge" => "neoforge".to_string(),
+                    // Legacy registry entries predate the field; they were
+                    // all Fabric.
+                    _ => "fabric".to_string(),
+                };
+            }
+        }
+        self.loader.modrinth_key().to_string()
+    }
+
+    /// Label matching `effective_loader_key`, for UI titles.
+    pub fn effective_loader_label(&self) -> &'static str {
+        match self.effective_loader_key().as_str() {
+            "forge" => "Forge",
+            "neoforge" => "NeoForge",
+            _ => "Fabric",
+        }
     }
 
     pub fn install_in_progress(&self) -> bool {
@@ -1103,6 +1184,18 @@ impl App {
             }
             WorkerMsg::FabricMcVersionsFailed(e) => {
                 tracing::warn!("fabric mc versions failed: {e}");
+            }
+            WorkerMsg::ForgeVersionsLoaded(m) => {
+                self.forge_versions = m;
+            }
+            WorkerMsg::ForgeVersionsFailed(e) => {
+                tracing::warn!("forge version list failed: {e}");
+            }
+            WorkerMsg::NeoForgeVersionsLoaded(m) => {
+                self.neoforge_versions = m;
+            }
+            WorkerMsg::NeoForgeVersionsFailed(e) => {
+                tracing::warn!("neoforge version list failed: {e}");
             }
             WorkerMsg::ModSearchStarted => {
                 self.mod_search_loading = true;
@@ -1428,6 +1521,31 @@ pub fn spawn_modrinth_categories_fetch(client: reqwest::Client, tx: UnboundedSen
             }
             Err(e) => {
                 let _ = tx.send(WorkerMsg::CategoriesFailed(format!("{e:#}")));
+            }
+        }
+    });
+}
+
+pub fn spawn_forge_meta_fetch(client: reqwest::Client, tx: UnboundedSender<WorkerMsg>) {
+    let c1 = client.clone();
+    let tx1 = tx.clone();
+    tokio::spawn(async move {
+        match crate::forge::fetch_forge_versions(&c1).await {
+            Ok(m) => {
+                let _ = tx1.send(WorkerMsg::ForgeVersionsLoaded(m));
+            }
+            Err(e) => {
+                let _ = tx1.send(WorkerMsg::ForgeVersionsFailed(format!("{e:#}")));
+            }
+        }
+    });
+    tokio::spawn(async move {
+        match crate::forge::fetch_neoforge_versions(&client).await {
+            Ok(m) => {
+                let _ = tx.send(WorkerMsg::NeoForgeVersionsLoaded(m));
+            }
+            Err(e) => {
+                let _ = tx.send(WorkerMsg::NeoForgeVersionsFailed(format!("{e:#}")));
             }
         }
     });

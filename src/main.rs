@@ -4,6 +4,7 @@ mod config;
 mod download;
 mod event;
 mod fabric;
+mod forge;
 mod java;
 mod launch;
 mod logging;
@@ -67,6 +68,7 @@ async fn main() -> Result<()> {
     app::spawn_manifest_fetch(app.client.clone(), worker_tx.clone());
     app::spawn_news_fetch(app.client.clone(), worker_tx.clone());
     app::spawn_fabric_meta_fetch(app.client.clone(), worker_tx.clone());
+    app::spawn_forge_meta_fetch(app.client.clone(), worker_tx.clone());
     app::spawn_modrinth_categories_fetch(app.client.clone(), worker_tx.clone());
     update::spawn_check(app.client.clone(), worker_tx.clone());
     // Try to restore a previous Microsoft sign-in in the background — the
@@ -663,7 +665,7 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
             } else {
                 app.info_popup = Some(app::InfoPopup::new(
                     "Install this version first",
-                    "Click the Install button on the Play tab to download and set up Fabric, then come back here to browse mods.",
+                    "Click the Install button on the Play tab to download and set up the mod loader, then come back here to browse mods.",
                 ));
             }
         }
@@ -777,6 +779,12 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
                 flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 app.status_message = "Cancelling modpack install...".into();
             }
+        }
+        Hit::CycleLoader => {
+            app.loader = app.loader.cycle();
+            app.list_offset = 0;
+            config::save_loader(app.loader.as_str());
+            app.status_message = format!("Mod loader: {}", app.loader.label());
         }
         Hit::ShowMoreModsButton => {
             trigger_mod_search(app, true);
@@ -1070,7 +1078,7 @@ fn trigger_install(app: &mut App) {
         return;
     }
     if app.selected_kind == app::VersionFilter::Modded {
-        trigger_install_fabric(app);
+        trigger_install_modded(app);
         return;
     }
     let Some(entry) = app.selected_manifest_entry() else {
@@ -1087,14 +1095,46 @@ fn trigger_install(app: &mut App) {
     });
 }
 
-fn trigger_install_fabric(app: &mut App) {
+/// The loader build to install for `mc` under the active loader, with a
+/// user-facing reason when there isn't one.
+fn modded_loader_version(app: &App, mc: &str) -> Result<String, String> {
+    match app.loader {
+        app::ModLoader::Fabric => app
+            .latest_stable_fabric_loader()
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Fabric loader list still loading, try again in a moment".to_string()),
+        app::ModLoader::NeoForge => {
+            if app.neoforge_versions.is_empty() {
+                return Err("NeoForge version list still loading, try again in a moment".into());
+            }
+            app.neoforge_versions
+                .get(mc)
+                .cloned()
+                .ok_or_else(|| format!("NeoForge doesn't support Minecraft {mc}"))
+        }
+        app::ModLoader::Forge => {
+            if app.forge_versions.is_empty() {
+                return Err("Forge version list still loading, try again in a moment".into());
+            }
+            app.forge_versions
+                .get(mc)
+                .cloned()
+                .ok_or_else(|| format!("Forge doesn't support Minecraft {mc} (1.13+ only)"))
+        }
+    }
+}
+
+fn trigger_install_modded(app: &mut App) {
     let Some(mc) = app.selected_version.clone() else {
         app.status_message = "Pick a Minecraft version first".into();
         return;
     };
-    let Some(loader) = app.latest_stable_fabric_loader().map(|s| s.to_string()) else {
-        app.status_message = "Fabric loader list still loading — try again in a moment".into();
-        return;
+    let loader_version = match modded_loader_version(app, &mc) {
+        Ok(v) => v,
+        Err(msg) => {
+            app.status_message = msg;
+            return;
+        }
     };
     let Some(manifest) = app.manifest.clone() else {
         app.status_message = "Version manifest not loaded yet".into();
@@ -1105,10 +1145,46 @@ fn trigger_install_fabric(app: &mut App) {
     let tx = app.worker_tx.clone();
     let cancel = download::new_cancel_flag();
     app.install_cancel = Some(cancel.clone());
-    app.status_message = format!("Installing Fabric {loader} for {mc}...");
-    tokio::spawn(async move {
-        worker::do_install_fabric(client, paths_clone, manifest, mc, loader, cancel, tx).await;
-    });
+    app.status_message = format!(
+        "Installing {} {loader_version} for {mc}...",
+        app.loader.label()
+    );
+    match app.loader {
+        app::ModLoader::Fabric => {
+            tokio::spawn(async move {
+                worker::do_install_fabric(
+                    client,
+                    paths_clone,
+                    manifest,
+                    mc,
+                    loader_version,
+                    cancel,
+                    tx,
+                )
+                .await;
+            });
+        }
+        app::ModLoader::NeoForge | app::ModLoader::Forge => {
+            let kind = if app.loader == app::ModLoader::Forge {
+                forge::ForgeKind::Forge
+            } else {
+                forge::ForgeKind::NeoForge
+            };
+            tokio::spawn(async move {
+                worker::do_install_forge(
+                    client,
+                    paths_clone,
+                    manifest,
+                    kind,
+                    mc,
+                    loader_version,
+                    cancel,
+                    tx,
+                )
+                .await;
+            });
+        }
+    }
 }
 
 fn trigger_launch(app: &mut App) {
@@ -1157,9 +1233,12 @@ fn trigger_launch(app: &mut App) {
             app.status_message = "Pick a Minecraft version first".into();
             return;
         };
-        let Some(loader) = app.latest_stable_fabric_loader().map(|s| s.to_string()) else {
-            app.status_message = "Fabric loader list still loading — try again".into();
-            return;
+        let loader_version = match modded_loader_version(app, &mc) {
+            Ok(v) => v,
+            Err(msg) => {
+                app.status_message = msg;
+                return;
+            }
         };
         let Some(manifest) = app.manifest.clone() else {
             app.status_message = "Version manifest not loaded yet".into();
@@ -1167,12 +1246,46 @@ fn trigger_launch(app: &mut App) {
         };
         config::save_last_played(&mc, app.selected_kind.as_str());
         app.install_cancel = Some(cancel.clone());
-        tokio::spawn(async move {
-            worker::do_install_and_launch_fabric(
-                client, paths_clone, manifest, mc, loader, java, opts, cancel, tx,
-            )
-            .await;
-        });
+        match app.loader {
+            app::ModLoader::Fabric => {
+                tokio::spawn(async move {
+                    worker::do_install_and_launch_fabric(
+                        client,
+                        paths_clone,
+                        manifest,
+                        mc,
+                        loader_version,
+                        java,
+                        opts,
+                        cancel,
+                        tx,
+                    )
+                    .await;
+                });
+            }
+            app::ModLoader::NeoForge | app::ModLoader::Forge => {
+                let kind = if app.loader == app::ModLoader::Forge {
+                    forge::ForgeKind::Forge
+                } else {
+                    forge::ForgeKind::NeoForge
+                };
+                tokio::spawn(async move {
+                    worker::do_install_and_launch_forge(
+                        client,
+                        paths_clone,
+                        manifest,
+                        kind,
+                        mc,
+                        loader_version,
+                        java,
+                        opts,
+                        cancel,
+                        tx,
+                    )
+                    .await;
+                });
+            }
+        }
         return;
     }
 
@@ -1267,7 +1380,7 @@ fn trigger_mod_search(app: &mut App, append: bool) {
         }
     };
     let query = app.mod_search_query.trim().to_string();
-    let loader = app.loader.modrinth_key().to_string();
+    let loader = app.effective_loader_key();
     let kind = app.browser_kind;
     let project_type = kind.project_type().to_string();
     let include_loader = kind.uses_loader();
@@ -1332,7 +1445,7 @@ fn trigger_mod_install(app: &mut App, idx: usize) {
         return;
     }
     let loader = if kind.uses_loader() {
-        Some(app.loader.modrinth_key().to_string())
+        Some(app.effective_loader_key())
     } else {
         None
     };
@@ -1759,7 +1872,7 @@ fn trigger_import_profile(app: &mut App) {
     // Install every project listed in the imported profile that isn't already
     // installed locally. We fire one worker per project.
     let loader = if app.browser_kind.uses_loader() {
-        Some(app.loader.modrinth_key().to_string())
+        Some(app.effective_loader_key())
     } else {
         None
     };

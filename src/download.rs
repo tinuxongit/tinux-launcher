@@ -178,7 +178,18 @@ async fn build_plan(
         let Some(dl) = &lib.downloads else { continue };
         if let Some(artifact) = &dl.artifact {
             let dest = paths.library_path(&artifact.path);
-            jobs.push(job_for_artifact(artifact, &dest));
+            if artifact.url.is_empty() {
+                // Generated locally by a loader installer (Forge/NeoForge);
+                // it can't be downloaded, only checked for presence.
+                if !dest.exists() {
+                    anyhow::bail!(
+                        "library {} is missing and has no download URL; reinstall this version to re-run the loader installer",
+                        lib.name
+                    );
+                }
+            } else {
+                jobs.push(job_for_artifact(artifact, &dest));
+            }
             classpath.push(dest);
         }
         if let Some(classifier) = version::natives_classifier(lib) {

@@ -60,8 +60,27 @@ pub struct FileEnv {
     pub server: Option<String>,
 }
 
-/// What runtime the modpack targets. Tinux is Fabric-only.
+/// Which loader runtime a modpack targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackLoader {
+    Fabric,
+    Forge,
+    NeoForge,
+}
+
+impl PackLoader {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PackLoader::Fabric => "fabric",
+            PackLoader::Forge => "forge",
+            PackLoader::NeoForge => "neoforge",
+        }
+    }
+}
+
+/// What runtime the modpack targets.
 pub struct LoaderReq {
+    pub loader: PackLoader,
     pub mc_version: String,
     pub loader_version: String,
 }
@@ -79,32 +98,32 @@ pub fn parse_mrpack(bytes: &[u8]) -> Result<ModpackIndex> {
     serde_json::from_str(&s).context("parsing modrinth.index.json")
 }
 
-/// Validate the modpack targets Fabric and pull out the Minecraft version.
-/// Forge / NeoForge / Quilt packs are rejected with a clear message.
+/// Work out which loader the modpack targets and at what version.
+/// Fabric, Forge, and NeoForge are supported; Quilt is rejected.
 pub fn loader_requirement(index: &ModpackIndex) -> Result<LoaderReq> {
     let mc = index
         .dependencies
         .get("minecraft")
         .cloned()
         .ok_or_else(|| anyhow!("modpack index is missing its Minecraft version"))?;
-    if let Some(v) = index.dependencies.get("forge") {
-        bail!("this modpack needs Forge {v}; Tinux only supports Fabric modpacks");
-    }
-    if let Some(v) = index.dependencies.get("neoforge") {
-        bail!("this modpack needs NeoForge {v}; Tinux only supports Fabric modpacks");
-    }
     if let Some(v) = index.dependencies.get("quilt-loader") {
-        bail!("this modpack needs Quilt {v}; Tinux only supports Fabric modpacks");
+        bail!("this modpack needs Quilt {v}, which Tinux doesn't support yet");
     }
-    let loader = index
-        .dependencies
-        .get("fabric-loader")
-        .cloned()
-        .ok_or_else(|| anyhow!("this modpack doesn't target Fabric; Tinux only supports Fabric modpacks"))?;
-    Ok(LoaderReq {
-        mc_version: mc,
-        loader_version: loader,
-    })
+    let candidates = [
+        ("fabric-loader", PackLoader::Fabric),
+        ("neoforge", PackLoader::NeoForge),
+        ("forge", PackLoader::Forge),
+    ];
+    for (key, loader) in candidates {
+        if let Some(v) = index.dependencies.get(key) {
+            return Ok(LoaderReq {
+                loader,
+                mc_version: mc,
+                loader_version: v.clone(),
+            });
+        }
+    }
+    bail!("this modpack declares no supported loader (Fabric, NeoForge, or Forge)")
 }
 
 /// Download every client-relevant file in the index into `instance_dir` at its
@@ -292,14 +311,27 @@ mod tests {
         let index = index_with(&[("minecraft", "1.20.1"), ("fabric-loader", "0.15.11")]);
         let req = loader_requirement(&index).unwrap();
 
+        assert_eq!(req.loader, PackLoader::Fabric);
         assert_eq!(req.mc_version, "1.20.1");
         assert_eq!(req.loader_version, "0.15.11");
     }
 
     #[test]
-    fn loader_requirement_rejects_non_fabric_pack() {
-        let index = index_with(&[("minecraft", "1.20.1"), ("forge", "47.3.0")]);
+    fn loader_requirement_accepts_forge_and_neoforge() {
+        let forge = index_with(&[("minecraft", "1.20.1"), ("forge", "47.3.0")]);
+        let req = loader_requirement(&forge).unwrap();
+        assert_eq!(req.loader, PackLoader::Forge);
+        assert_eq!(req.loader_version, "47.3.0");
 
+        let neo = index_with(&[("minecraft", "1.21.1"), ("neoforge", "21.1.77")]);
+        let req = loader_requirement(&neo).unwrap();
+        assert_eq!(req.loader, PackLoader::NeoForge);
+        assert_eq!(req.loader_version, "21.1.77");
+    }
+
+    #[test]
+    fn loader_requirement_rejects_quilt() {
+        let index = index_with(&[("minecraft", "1.20.1"), ("quilt-loader", "0.21.0")]);
         assert!(loader_requirement(&index).is_err());
     }
 }

@@ -102,6 +102,7 @@ pub enum Hit {
     CancelModpackInstall,
     ConfirmRemoveModpack,
     CancelRemoveModpack,
+    CycleLoader,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -183,6 +184,10 @@ pub enum WorkerMsg {
     FabricLoadersFailed(String),
     FabricMcVersionsLoaded(Vec<String>),
     FabricMcVersionsFailed(String),
+    ForgeVersionsLoaded(std::collections::HashMap<String, String>),
+    ForgeVersionsFailed(String),
+    NeoForgeVersionsLoaded(std::collections::HashMap<String, String>),
+    NeoForgeVersionsFailed(String),
     ModSearchStarted,
     ModSearchDone {
         request_id: u64,

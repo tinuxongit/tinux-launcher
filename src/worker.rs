@@ -1,6 +1,7 @@
 use crate::download::{install_version, CancelFlag, ProgressEvent, VerifyMode};
 use crate::event::{InstallKind, WorkerMsg};
 use crate::fabric;
+use crate::forge::{self, ForgeKind};
 use crate::java::{self, JavaInstall};
 use crate::launch::{self, LaunchOptions};
 use crate::manifest::{ManifestVersion, VersionKind, VersionManifest};
@@ -262,6 +263,142 @@ pub async fn do_install_fabric(
     }
 }
 
+/// Install a Forge/NeoForge version (no launch). Runs the official installer
+/// if needed, then the normal full-verify install pass.
+#[allow(clippy::too_many_arguments)]
+pub async fn do_install_forge(
+    client: reqwest::Client,
+    paths: Paths,
+    manifest: Arc<VersionManifest>,
+    kind: ForgeKind,
+    mc_version: String,
+    loader_version: String,
+    cancel: CancelFlag,
+    tx: UnboundedSender<WorkerMsg>,
+) {
+    let progress_tx = tx.clone();
+    let progress = move |what: String| {
+        let _ = progress_tx.send(WorkerMsg::InstallProgress {
+            kind: InstallKind::Install,
+            done: 0,
+            total: 0,
+            what,
+        });
+    };
+    let id = match forge::prepare_version(
+        &client,
+        &paths,
+        &manifest,
+        kind,
+        &mc_version,
+        &loader_version,
+        None,
+        &cancel,
+        progress,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::InstallFailed {
+                version: format!("{}/{mc_version}", kind.label()),
+                error: format!("{e:#}"),
+            });
+            return;
+        }
+    };
+
+    let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
+    let app_tx = tx.clone();
+    let forwarder = tokio::spawn(async move {
+        while let Some(ev) = prog_rx.recv().await {
+            let _ = app_tx.send(WorkerMsg::InstallProgress {
+                kind: InstallKind::Install,
+                done: ev.done,
+                total: ev.total,
+                what: ev.what,
+            });
+        }
+    });
+    let result = install_version(
+        &client,
+        &paths,
+        &id,
+        "",
+        &prog_tx,
+        VerifyMode::Full,
+        &cancel,
+    )
+    .await;
+    drop(prog_tx);
+    let _ = forwarder.await;
+    match result {
+        Ok(_) => {
+            let _ = tx.send(WorkerMsg::InstallDone(id));
+        }
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::InstallFailed {
+                version: id,
+                error: format!("{e:#}"),
+            });
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn do_install_and_launch_forge(
+    client: reqwest::Client,
+    paths: Paths,
+    manifest: Arc<VersionManifest>,
+    kind: ForgeKind,
+    mc_version: String,
+    loader_version: String,
+    java: JavaInstall,
+    opts: LaunchOptions,
+    cancel: CancelFlag,
+    tx: UnboundedSender<WorkerMsg>,
+) {
+    let progress_tx = tx.clone();
+    let progress = move |what: String| {
+        let _ = progress_tx.send(WorkerMsg::InstallProgress {
+            kind: InstallKind::Install,
+            done: 0,
+            total: 0,
+            what,
+        });
+    };
+    let id = match forge::prepare_version(
+        &client,
+        &paths,
+        &manifest,
+        kind,
+        &mc_version,
+        &loader_version,
+        None,
+        &cancel,
+        progress,
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::LaunchFailed(format!(
+                "{} setup failed: {e:#}",
+                kind.label()
+            )));
+            return;
+        }
+    };
+    let entry = ManifestVersion {
+        id,
+        kind: VersionKind::Release,
+        url: String::new(),
+        sha1: String::new(),
+        release_time: String::new(),
+    };
+    do_install_and_launch(client, paths, entry, java, opts, cancel, tx).await;
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn do_install_and_launch_fabric(
     client: reqwest::Client,
@@ -377,11 +514,11 @@ async fn install_modpack_inner(
         anyhow::bail!("cancelled by user");
     }
 
-    // 2. Parse + Fabric-only gate.
+    // 2. Parse + work out which loader the pack needs.
     let index = crate::modpack::parse_mrpack(&bytes)?;
     let req = crate::modpack::loader_requirement(&index)?;
     let mc = req.mc_version;
-    let fabric_loader = req.loader_version;
+    let loader_version = req.loader_version;
     let id = crate::modpack::instance_id(project_id, &mc);
     let display_name = if name.trim().is_empty() {
         index.name.clone()
@@ -389,17 +526,52 @@ async fn install_modpack_inner(
         name.to_string()
     };
 
-    // 3. Build + install the Fabric runtime under this modpack's own id.
-    progress(0, 0, &format!("Installing Fabric for {mc}"));
-    crate::fabric::prepare_fabric_version_as(
-        client,
-        paths,
-        manifest,
-        &mc,
-        &fabric_loader,
-        Some(id.as_str()),
-    )
-    .await?;
+    // 3. Build + install the loader runtime under this modpack's own id.
+    progress(
+        0,
+        0,
+        &format!("Installing {} for {mc}", req.loader.as_str()),
+    );
+    match req.loader {
+        crate::modpack::PackLoader::Fabric => {
+            crate::fabric::prepare_fabric_version_as(
+                client,
+                paths,
+                manifest,
+                &mc,
+                &loader_version,
+                Some(id.as_str()),
+            )
+            .await?;
+        }
+        crate::modpack::PackLoader::Forge | crate::modpack::PackLoader::NeoForge => {
+            let kind = if req.loader == crate::modpack::PackLoader::Forge {
+                ForgeKind::Forge
+            } else {
+                ForgeKind::NeoForge
+            };
+            let progress_tx = tx.clone();
+            let installer_progress = move |what: String| {
+                let _ = progress_tx.send(WorkerMsg::ModpackInstallProgress {
+                    done: 0,
+                    total: 0,
+                    what,
+                });
+            };
+            forge::prepare_version(
+                client,
+                paths,
+                manifest,
+                kind,
+                &mc,
+                &loader_version,
+                Some(id.as_str()),
+                cancel,
+                installer_progress,
+            )
+            .await?;
+        }
+    }
     let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
     let app_tx = tx.clone();
     let forwarder = tokio::spawn(async move {
@@ -447,6 +619,7 @@ async fn install_modpack_inner(
         mc_version: mc,
         modpack_version: file.version_number,
         project_id: project_id.to_string(),
+        loader: req.loader.as_str().to_string(),
     };
     crate::config::add_modpack(instance.clone());
     Ok(instance)

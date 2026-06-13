@@ -80,8 +80,13 @@ pub struct LibraryDownloads {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Artifact {
     pub path: String,
+    /// Empty for libraries generated locally by a loader installer
+    /// (Forge/NeoForge binary-patched jars); those can't be re-downloaded.
+    #[serde(default)]
     pub url: String,
+    #[serde(default)]
     pub sha1: String,
+    #[serde(default)]
     pub size: u64,
 }
 

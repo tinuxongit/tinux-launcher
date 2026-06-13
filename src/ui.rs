@@ -671,9 +671,10 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             ver.to_string()
         };
-        let body = match app.selected_kind.loader_label() {
-            Some(loader) => format!("{label} ({loader})"),
-            None => label,
+        let body = match app.selected_kind {
+            VersionFilter::Modded => format!("{label} ({})", app.loader.label()),
+            VersionFilter::Modpacks => format!("{label} (Modpack)"),
+            VersionFilter::Releases => label,
         };
         title_spans.push(Span::styled("  ·  ", theme::dim()));
         title_spans.push(Span::styled(
@@ -789,7 +790,7 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         }
     } else {
         match app.selected_manifest_entry() {
-            Some(v) if modded => format!("{}  ·  Fabric mod loader", v.id),
+            Some(v) if modded => format!("{}  ·  {} mod loader", v.id, app.loader.label()),
             Some(v) => format!("{} ({})", v.id, v.kind.label()),
             None => "(no version selected)".to_string(),
         }
@@ -1205,20 +1206,35 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
                 app.show_older,
                 Hit::ToggleShowOlder,
             );
-        } else if let Some(v) = app.latest_stable_fabric_loader() {
-            // Reuse that column to show the loader hint when modded is active.
-            let hint_rect = Rect::new(
-                filter_cols[5].x,
-                filter_cols[5].y,
-                filter_cols[5].width + filter_cols[6].width,
-                filter_cols[5].height,
-            );
-            let mid = hint_rect.y + hint_rect.height / 2;
+        } else {
+            // Reuse that column for the loader picker when modded is active:
+            // clicking cycles Fabric -> NeoForge -> Forge.
+            let suffix = match app.loader {
+                ModLoader::Fabric => app
+                    .latest_stable_fabric_loader()
+                    .map(|v| format!(" {v}"))
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            let label = format!("Loader: {}{suffix} ▸", app.loader.label());
+            let w = (label.chars().count() as u16)
+                .min(filter_cols[5].width + filter_cols[6].width);
+            let mid = filter_cols[5].y + filter_cols[5].height / 2;
+            let rect = Rect::new(filter_cols[5].x, mid, w, 1);
+            let hovered = app.hover == Some(Hit::CycleLoader);
+            let style = if hovered {
+                Style::default()
+                    .fg(theme::ACCENT_HI)
+                    .bg(theme::BG)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::ACCENT).bg(theme::BG)
+            };
             f.render_widget(
-                Paragraph::new(Span::styled(format!("Loader: Fabric {v}"), theme::dim()))
-                    .style(theme::base()),
-                Rect::new(hint_rect.x, mid, hint_rect.width, 1),
+                Paragraph::new(Span::styled(label, style)).style(theme::base()),
+                rect,
             );
+            app.click_regions.push((rect, Hit::CycleLoader));
         }
     }
 
@@ -2909,7 +2925,7 @@ fn draw_mod_browser(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|m| format!("{} · {}", m.name, m.mc_version))
         .or_else(|| app.browse_mc_version())
         .unwrap_or_else(|| "?".into());
-    let title = format!(" Content browser · {} · {} ", ModLoader::Fabric.label(), target);
+    let title = format!(" Content browser · {} · {} ", app.effective_loader_label(), target);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -3010,7 +3026,8 @@ fn draw_modpack_browser(f: &mut Frame, app: &mut App, area: Rect) {
         .modpack_browse_version
         .clone()
         .unwrap_or_else(|| "select a version".into());
-    let title = format!(" Modpack browser · {} · {} ", ModLoader::Fabric.label(), ver);
+    // Modpacks declare their own loader, so the title only shows the version.
+    let title = format!(" Modpack browser · {} ", ver);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

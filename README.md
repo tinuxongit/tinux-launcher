@@ -2,6 +2,12 @@
 
 Terminal Minecraft Java Edition launcher.
 
+Plays vanilla (every version), Fabric, NeoForge, and Forge (1.13+), with a
+built-in Modrinth browser for mods, shaders, resource packs, datapacks, and
+modpacks. Pick the mod loader on the Versions tab via the `Loader:` control.
+Forge and NeoForge installs run the official installer headlessly, so they
+need a JDK (17+ for modern versions).
+
 ## Install & run
 
 ### Quick install (no Node required)
