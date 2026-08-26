@@ -37,6 +37,31 @@ pub fn detect_for_major(major: u32) -> Option<JavaInstall> {
     detect_all().into_iter().find(|j| j.major == major)
 }
 
+/// Whether an installed JVM can run a version that asks for `required`.
+///
+/// Mojang names one major version per release, but a newer JVM runs those
+/// releases fine: 1.20.1 asks for 17 and plays on 21. Versions from the Java 8
+/// era are the exception — they reach into JDK internals that modern JVMs
+/// removed — so those take the exact major only.
+pub fn major_can_run(installed: u32, required: u32) -> bool {
+    if required <= 8 {
+        installed == required
+    } else {
+        installed >= required
+    }
+}
+
+/// The best installed JVM for a version: the exact major the version asks for
+/// when it's here, otherwise the closest newer one.
+pub fn detect_for_version(required: u32) -> Option<JavaInstall> {
+    let mut usable: Vec<JavaInstall> = detect_all()
+        .into_iter()
+        .filter(|j| major_can_run(j.major, required))
+        .collect();
+    usable.sort_by_key(|j| j.major);
+    usable.into_iter().next()
+}
+
 pub fn detect_all() -> Vec<JavaInstall> {
     candidate_paths()
         .into_iter()
@@ -216,7 +241,21 @@ fn parse_major(s: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_major;
+    use super::{major_can_run, parse_major};
+
+    #[test]
+    fn newer_java_runs_modern_versions() {
+        // 1.20.1 asks for 17; 21 is what most Linux distros ship.
+        assert!(major_can_run(21, 17));
+        assert!(major_can_run(17, 17));
+        assert!(!major_can_run(11, 17));
+    }
+
+    #[test]
+    fn old_versions_need_their_own_java() {
+        assert!(major_can_run(8, 8));
+        assert!(!major_can_run(21, 8));
+    }
 
     #[test]
     fn jdk8() {

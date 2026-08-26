@@ -40,7 +40,9 @@ use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
 use std::io::{self, Stdout};
 use tokio::sync::mpsc::unbounded_channel;
 
+#[cfg(windows)]
 const TERMINAL_COLS: u16 = 120;
+#[cfg(windows)]
 const TERMINAL_ROWS: u16 = 38;
 const APP_TITLE: &str = "Tinux Launcher";
 
@@ -129,7 +131,12 @@ fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, Option<(u16, 
     execute!(stdout, SetTitle(APP_TITLE), EnterAlternateScreen, EnableMouseCapture)?;
     // Keep the TUI at a predictable size while it is running.
     // Some terminal hosts ignore resize requests, so this is best-effort.
-    let original_size = crossterm::terminal::size().ok();
+    // Windows only: see enforce_terminal_size. Nothing to restore elsewhere.
+    let original_size = if cfg!(windows) {
+        crossterm::terminal::size().ok()
+    } else {
+        None
+    };
     enforce_terminal_size(&mut stdout);
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
@@ -153,6 +160,14 @@ fn restore_terminal(
     Ok(())
 }
 
+/// Windows opens the launcher in a console window of its own, so it gets
+/// pinned to the size the UI is drawn for.
+///
+/// Linux and macOS run it inside a terminal the user already sized. Resizing
+/// that window out from under them is rude, most terminals ignore the request
+/// anyway, and the ones that don't fight the user every time they drag an
+/// edge. The layout works at any size, so there is nothing to enforce.
+#[cfg(windows)]
 fn enforce_terminal_size(stdout: &mut Stdout) {
     if crossterm::terminal::size().ok() != Some((TERMINAL_COLS, TERMINAL_ROWS)) {
         let _ = execute!(
@@ -162,15 +177,21 @@ fn enforce_terminal_size(stdout: &mut Stdout) {
     }
 }
 
+#[cfg(not(windows))]
+fn enforce_terminal_size(_stdout: &mut Stdout) {}
+
+#[cfg(windows)]
 fn enforce_terminal_backend_size(terminal: &mut Terminal<CrosstermBackend<Stdout>>) {
     if crossterm::terminal::size().ok() != Some((TERMINAL_COLS, TERMINAL_ROWS)) {
         let _ = execute!(
             terminal.backend_mut(),
             crossterm::terminal::SetSize(TERMINAL_COLS, TERMINAL_ROWS)
         );
-        let _ = terminal.clear();
     }
 }
+
+#[cfg(not(windows))]
+fn enforce_terminal_backend_size(_terminal: &mut Terminal<CrosstermBackend<Stdout>>) {}
 
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
@@ -204,7 +225,12 @@ async fn run_loop(
                 match ev {
                     Some(Ok(Event::Key(k))) => handle_key(app, k),
                     Some(Ok(Event::Mouse(m))) => handle_mouse(app, m),
-                    Some(Ok(Event::Resize(_, _))) => enforce_terminal_backend_size(terminal),
+                    Some(Ok(Event::Resize(_, _))) => {
+                        enforce_terminal_backend_size(terminal);
+                        // Redraw from scratch: the old frame's cells are stale
+                        // at the new size whether or not we asked for one.
+                        app.needs_clear = true;
+                    }
                     Some(Ok(_)) => {}
                     Some(Err(e)) => {
                         tracing::warn!("event stream error: {e}");

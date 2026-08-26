@@ -149,9 +149,9 @@ pub async fn do_install_and_launch(
                 return;
             }
         }
-    } else if java.major == required_java {
+    } else if java::major_can_run(java.major, required_java) {
         java
-    } else if let Some(found) = java::detect_for_major(required_java) {
+    } else if let Some(found) = java::detect_for_version(required_java) {
         found
     } else {
         let found = java::detect_all()
@@ -164,9 +164,15 @@ pub async fn do_install_and_launch(
         } else {
             found
         };
+        // Java 8 versions won't run on anything newer, so the message says
+        // exactly 8 there and "or newer" for everything since 1.17.
+        let wanted = if required_java <= 8 {
+            format!("Java {required_java}")
+        } else {
+            format!("Java {required_java} or newer")
+        };
         let _ = tx.send(WorkerMsg::LaunchFailed(format!(
-            "Minecraft {} needs Java {}, but {found}. Install Java {} or put it on PATH.",
-            version_id, required_java, required_java
+            "Minecraft {version_id} needs {wanted}, but {found}. Install {wanted} or put it on PATH."
         )));
         return;
     };
