@@ -172,7 +172,7 @@ pub async fn do_install_and_launch(
             format!("Java {required_java} or newer")
         };
         let _ = tx.send(WorkerMsg::LaunchFailed(format!(
-            "Minecraft {version_id} needs {wanted}, but {found}. Install {wanted} or put it on PATH."
+            "Minecraft {version_id} needs {wanted}. Found {found}. Install it, or set the Java path for this version in Settings."
         )));
         return;
     };

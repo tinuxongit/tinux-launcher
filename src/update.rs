@@ -62,7 +62,7 @@ pub async fn check(_client: &reqwest::Client) -> Result<UpdateInfo> {
         anyhow::bail!("redirect didn't point at a tagged release: {location}");
     }
     let latest = tag.trim_start_matches('v').to_string();
-    let up_to_date = latest == current;
+    let up_to_date = is_up_to_date(&current, &latest);
     let html_url = format!(
         "https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/tag/{tag}"
     );
@@ -78,6 +78,29 @@ pub async fn check(_client: &reqwest::Client) -> Result<UpdateInfo> {
         up_to_date,
         asset,
     })
+}
+
+/// Whether the published release is worth installing over what's running.
+///
+/// Compares numbers, not strings. A string compare calls any difference an
+/// update, so anyone running a build newer than the published release gets
+/// offered a downgrade, and taking it quietly undoes their build.
+fn is_up_to_date(current: &str, latest: &str) -> bool {
+    match (version_key(current), version_key(latest)) {
+        (Some(c), Some(l)) => l <= c,
+        _ => latest == current,
+    }
+}
+
+/// "0.1.38" into comparable numbers. Returns None for anything that isn't
+/// three plain numbers, and the caller then falls back to an exact match, so
+/// an unexpected tag format is never offered as an update.
+fn version_key(v: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = v.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    Some((major, minor, patch))
 }
 
 fn asset_for_current_platform(tag: &str) -> Option<ReleaseAsset> {
@@ -396,4 +419,28 @@ pub fn spawn_download(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_up_to_date;
+
+    fn offers_update(current: &str, latest: &str) -> bool {
+        !is_up_to_date(current, latest)
+    }
+
+    #[test]
+    fn newer_release_is_offered() {
+        assert!(offers_update("0.1.37", "0.1.38"));
+        assert!(offers_update("0.1.9", "0.1.10"));
+        assert!(offers_update("0.1.38", "0.2.0"));
+    }
+
+    #[test]
+    fn same_or_older_release_is_not() {
+        assert!(!offers_update("0.1.38", "0.1.38"));
+        // A local build ahead of the published release: offering this would
+        // downgrade it.
+        assert!(!offers_update("0.1.38", "0.1.37"));
+    }
 }

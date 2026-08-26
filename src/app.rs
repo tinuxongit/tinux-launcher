@@ -273,7 +273,6 @@ pub struct App {
     /// the worker bail out; cleared when the worker reports done/failed.
     pub install_cancel: Option<crate::download::CancelFlag>,
     pub launch_state: LaunchState,
-    pub launch_error: Option<String>,
 
     pub news: Vec<NewsEntry>,
     pub news_offset: usize,
@@ -497,7 +496,6 @@ impl App {
             install: None,
             install_cancel: None,
             launch_state: LaunchState::Idle,
-            launch_error: None,
             news: Vec::new(),
             news_offset: 0,
             viewing_news: None,
@@ -597,6 +595,14 @@ impl App {
             }
         }
         self.logs.push_back(sanitize_log(&line));
+    }
+
+    /// Report a failure in both places it belongs. The status bar is one row
+    /// wide and truncates, and it's overwritten by the next thing that
+    /// happens, so the Logs tab is where a long error can actually be read.
+    pub fn report_failure(&mut self, message: String) {
+        self.push_log(message.clone());
+        self.status_message = message;
     }
 
     pub fn visible_versions(&self) -> Vec<&ManifestVersion> {
@@ -1014,11 +1020,12 @@ impl App {
             WorkerMsg::InstallFailed { version, error } => {
                 self.install = None;
                 self.install_cancel = None;
-                self.status_message = if crate::download::is_cancel_error(&error) {
+                let message = if crate::download::is_cancel_error(&error) {
                     format!("Install cancelled for {version}")
                 } else {
                     format!("Install failed for {version}: {error}")
                 };
+                self.report_failure(message);
             }
             WorkerMsg::LaunchStarted(v) => {
                 self.launch_state = LaunchState::Running;
@@ -1031,14 +1038,14 @@ impl App {
             }
             WorkerMsg::LaunchExited(code) => {
                 self.launch_state = LaunchState::JustExited(code);
+                self.push_log(format!("Minecraft exited with code {code}"));
                 self.status_message = format!("Minecraft exited with code {code}");
                 self.needs_clear = true;
             }
             WorkerMsg::LaunchFailed(e) => {
                 self.launch_state = LaunchState::Idle;
                 self.install_cancel = None;
-                self.launch_error = Some(e.clone());
-                self.status_message = format!("Launch failed: {e}");
+                self.report_failure(format!("Launch failed: {e}"));
                 self.needs_clear = true;
             }
             WorkerMsg::NewsLoaded(entries) => {
@@ -1254,7 +1261,7 @@ impl App {
             }
             WorkerMsg::ModInstallFailed { project: _, error } => {
                 self.mod_installing = None;
-                self.status_message = format!("Mod install failed: {error}");
+                self.report_failure(format!("Mod install failed: {error}"));
             }
             WorkerMsg::CategoriesLoaded(c) => {
                 self.categories = c;
@@ -1320,11 +1327,12 @@ impl App {
             WorkerMsg::ModpackInstallFailed(error) => {
                 self.modpack_installing = None;
                 self.modpack_cancel = None;
-                self.status_message = if crate::download::is_cancel_error(&error) {
-                    "Modpack install cancelled".into()
+                let message = if crate::download::is_cancel_error(&error) {
+                    "Modpack install cancelled".to_string()
                 } else {
                     format!("Modpack install failed: {error}")
                 };
+                self.report_failure(message);
             }
         }
     }
