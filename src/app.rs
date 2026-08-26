@@ -287,6 +287,15 @@ pub struct App {
 
     pub account: Option<Account>,
     pub account_mode: AccountMode,
+    /// A saved Microsoft session is being refreshed in the background. Until
+    /// it resolves the mode is still Offline, which is not what the player
+    /// means to launch with, so Launch waits rather than playing as Steve.
+    pub session_restoring: bool,
+    /// Set once the player picks a mode by hand. Their choice is not something
+    /// a restore landing a moment later gets to override.
+    pub mode_chosen_by_user: bool,
+    /// Launch was pressed while the restore was still running.
+    pub launch_when_restored: bool,
     pub offline_name: String,
     pub focus: Focus,
     pub auth_in_progress: bool,
@@ -516,6 +525,9 @@ impl App {
             click_regions: Vec::with_capacity(64),
             account: None,
             account_mode: AccountMode::Offline,
+            session_restoring: true,
+            mode_chosen_by_user: false,
+            launch_when_restored: false,
             offline_name: saved_offline,
             focus: Focus::None,
             auth_in_progress: false,
@@ -1033,6 +1045,9 @@ impl App {
                 spawn_skin_preview(self.client.clone(), self.worker_tx.clone(), uuid);
                 spawn_cape_cache(self.client.clone(), self.worker_tx.clone(), owned_capes);
             }
+            WorkerMsg::SessionRestoreFinished => {
+                self.session_restoring = false;
+            }
             WorkerMsg::AuthFailed(e) => {
                 self.auth_in_progress = false;
                 self.auth_device_code = None;
@@ -1486,6 +1501,10 @@ pub fn spawn_manifest_fetch(
 /// Best-effort silent restore of a previously signed-in Microsoft session.
 /// Fires `AuthSucceeded` if the saved refresh token is still valid; otherwise
 /// stays quiet and lets the user start in offline mode.
+///
+/// It reports finishing either way. Success is not the only outcome anyone is
+/// waiting on: a launch held for the restore has to go ahead when there turns
+/// out to be no session to wait for.
 pub fn spawn_session_restore(tx: UnboundedSender<WorkerMsg>) {
     tokio::spawn(async move {
         match crate::auth::try_refresh_session().await {
@@ -1496,6 +1515,7 @@ pub fn spawn_session_restore(tx: UnboundedSender<WorkerMsg>) {
                 tracing::info!("no saved session restored: {e}");
             }
         }
+        let _ = tx.send(WorkerMsg::SessionRestoreFinished);
     });
 }
 

@@ -241,6 +241,12 @@ async fn run_loop(
             }
             Some(msg) = worker_rx.recv() => {
                 app.handle_worker(msg);
+                // A launch held for the session restore goes ahead now that
+                // the mode has settled.
+                if app.launch_when_restored && !app.session_restoring {
+                    app.launch_when_restored = false;
+                    trigger_launch(app);
+                }
             }
         }
     }
@@ -1000,8 +1006,14 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         }
         Hit::CopyLineButton => copy_selected_log(app),
         Hit::CopyAllButton => copy_all_logs(app),
-        Hit::ModeOffline => app.account_mode = AccountMode::Offline,
-        Hit::ModeOnline => app.account_mode = AccountMode::Online,
+        Hit::ModeOffline => {
+            app.account_mode = AccountMode::Offline;
+            app.mode_chosen_by_user = true;
+        }
+        Hit::ModeOnline => {
+            app.account_mode = AccountMode::Online;
+            app.mode_chosen_by_user = true;
+        }
         Hit::NewsItem(i) => {
             if let Some(entry) = app.news.get(i).cloned() {
                 let title = entry.title.clone();
@@ -1247,6 +1259,17 @@ fn trigger_launch(app: &mut App) {
         app.status_message = "Java not detected — install Java 17+ and restart".into();
         return;
     };
+    // A saved session refreshes in the background and only flips the mode to
+    // Online when it lands. Launching first would quietly play as the offline
+    // profile, whose access token is the string "0", and every Mojang service
+    // call then fails with a 401 the player has no way to connect to this.
+    // So wait, unless they picked Offline themselves.
+    if app.session_restoring && !app.mode_chosen_by_user {
+        app.launch_when_restored = true;
+        app.status_message = "Restoring your session, launching in a moment...".into();
+        return;
+    }
+
     let base_opts = match app.account_mode {
         AccountMode::Online => match &app.account {
             Some(a) => launch::LaunchOptions::from_account(a),

@@ -809,7 +809,18 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
         rows[0],
     );
 
-    let as_line = match (app.account_mode, &app.account) {
+    let as_line = if app.session_restoring && !app.mode_chosen_by_user && app.account.is_none() {
+        // Say the sign-in is coming. Reading "Steve (offline)" here and
+        // launching into it is how a session lands a second too late.
+        Line::from(vec![
+            Span::styled("Playing as: ", theme::dim()),
+            Span::styled(
+                "restoring your session...",
+                Style::default().fg(theme::GOLD),
+            ),
+        ])
+    } else {
+        match (app.account_mode, &app.account) {
         (AccountMode::Online, Some(a)) => Line::from(vec![
             Span::styled("Playing as: ", theme::dim()),
             Span::styled(
@@ -831,6 +842,7 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(theme::FG),
             ),
         ]),
+        }
     };
     f.render_widget(Paragraph::new(as_line).style(theme::base()), rows[1]);
 

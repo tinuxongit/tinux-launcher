@@ -148,6 +148,8 @@ pub enum WorkerMsg {
     },
     AuthSucceeded(Account),
     AuthFailed(String),
+    /// The startup session refresh finished, whether or not it signed anyone in.
+    SessionRestoreFinished,
     InstallProgress {
         kind: InstallKind,
         done: u64,
