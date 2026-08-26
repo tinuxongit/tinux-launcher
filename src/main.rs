@@ -50,6 +50,21 @@ const TERMINAL_COLS: u16 = 120;
 const TERMINAL_ROWS: u16 = 38;
 const APP_TITLE: &str = "Tinux Launcher";
 
+/// What `?` shows. Kept beside the key handling so the two drift together or
+/// not at all.
+const KEY_HELP: &str = "\
+1-5, Tab        switch tab
+Enter           launch the selected version
+arrows, wheel   scroll
+click a row     select a log line
+Ctrl+click      extend the log selection
+Ctrl+A          select every log line
+Ctrl+C          copy the selection
+Ctrl+V          paste into the offline name field
+Ctrl+L          redraw the screen
+?               this list
+Esc, q          close, or quit";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     if handle_cli_info_args() {
@@ -497,6 +512,11 @@ fn handle_key(app: &mut App, k: KeyEvent) {
         },
         // With a missing-Java offer up, Launch would only fail the same way
         // again, so Enter takes the offer instead. Dismiss clears it.
+        // The keys are worth a screen of their own: nothing in the UI says
+        // Ctrl+A selects every log line or Ctrl+L repaints.
+        KeyCode::Char('?') => {
+            app.info_popup = Some(app::InfoPopup::new("Keys", KEY_HELP));
+        }
         KeyCode::Enter
             if app.tab == Tab::Play
                 && matches!(

@@ -22,6 +22,9 @@ use ratatui::{
 const HEADER_HEIGHT: u16 = 4;
 const STATUS_HEIGHT: u16 = 1;
 const BUTTON_H: u16 = 3;
+/// Text inputs keep a box. A button can say "control" with brackets, but a
+/// field has to show where the text goes and how much room it has.
+const FIELD_H: u16 = 3;
 const SKIN_PREVIEW_BOX_H: u16 = 23;
 
 struct Fill {
@@ -438,7 +441,8 @@ fn draw_chip_button(
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    let prefix = if selected { "✓  " } else { "" };
+    // Selected chips are already gold; a tick would say it twice.
+    let prefix = "";
     let text = format!("{prefix}{label}");
     let mid = inner.height / 2;
     let styled = Span::styled(
@@ -654,7 +658,7 @@ fn draw_header(f: &mut Frame, app: &mut App, area: Rect) {
 
     let mut title_spans = vec![
         Span::styled(
-            " ⛏  Tinux Launcher",
+            " Tinux Launcher",
             Style::default()
                 .fg(theme::ACCENT_HI)
                 .add_modifier(Modifier::BOLD),
@@ -754,10 +758,16 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     // The missing-Java offer takes a line of explanation and a button row.
     let java_h = if app.java_prompt.is_some() { 1 + BUTTON_H } else { 0 };
     let java_gap = if app.java_prompt.is_some() { 1 } else { 0 };
-    // Default top: selected(1) + playing(1) + gap(1) + button(3) + gap(1) + progress + progress_gap
-    let default_top = 7u16 + progress_h + progress_gap + java_h + java_gap;
+    // selected(1) + playing(1) + gap(1) + button + gap(1), plus whatever the
+    // progress bar and the Java offer are asking for. Derived from BUTTON_H so
+    // it cannot drift when the button height changes.
+    let min_top = 4u16 + BUTTON_H;
+    let default_top = min_top + progress_h + progress_gap + java_h + java_gap;
     let max_top = inner.height.saturating_sub(4);
-    let top_h = app.news_split_top.unwrap_or(default_top).clamp(7, max_top.max(7));
+    let top_h = app
+        .news_split_top
+        .unwrap_or(default_top)
+        .clamp(min_top, max_top.max(min_top));
 
     let outer_rows = Layout::default()
         .direction(Direction::Vertical)
@@ -869,15 +879,15 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     } else if app.launch_state == LaunchState::Running {
         draw_disabled_button(f, btn_cols[0], "Running");
     } else if installed {
-        draw_button(f, app, btn_cols[0], "▶  Launch", Hit::LaunchButton, true);
+        draw_button(f, app, btn_cols[0], "Launch", Hit::LaunchButton, true);
     } else {
-        draw_button(f, app, btn_cols[0], "⬇  Install", Hit::InstallButton, true);
+        draw_button(f, app, btn_cols[0], "Install", Hit::InstallButton, true);
     }
     if instance_sel {
         if installed {
-            draw_button(f, app, btn_cols[2], "📦 Browse Content", Hit::BrowseModsButton, false);
+            draw_button(f, app, btn_cols[2], "Browse Content", Hit::BrowseModsButton, false);
         } else {
-            draw_dim_clickable_button(f, app, btn_cols[2], "📦 Browse Content", Hit::BrowseModsButton);
+            draw_dim_clickable_button(f, app, btn_cols[2], "Browse Content", Hit::BrowseModsButton);
         }
     }
 
@@ -969,7 +979,7 @@ fn draw_java_prompt(f: &mut Frame, app: &mut App, area: Rect) {
                 f,
                 app,
                 cols[0],
-                &format!("⬇  Download Java {major}"),
+                &format!("Download Java {major}"),
                 Hit::DownloadJavaButton,
                 true,
             );
@@ -979,7 +989,7 @@ fn draw_java_prompt(f: &mut Frame, app: &mut App, area: Rect) {
                 f,
                 app,
                 cols[0],
-                &format!("⬇  Retry Java {major}"),
+                &format!("Retry Java {major}"),
                 Hit::DownloadJavaButton,
                 true,
             );
@@ -994,9 +1004,10 @@ fn draw_java_prompt(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_news_header(f: &mut Frame, app: &mut App, area: Rect) {
     let grip_hovered = app.hover == Some(Hit::NewsSplitter) || app.dragging_split;
-    let grip_char = if grip_hovered { "⇕ " } else { "↕ " };
-    let title_text = format!("{grip_char}Release notes ");
-    let link_text = "See all on minecraft.net ↗";
+    // Hover styles the whole title; a grip glyph would be a second way of
+    // saying the same thing.
+    let title_text = "Release notes ".to_string();
+    let link_text = "See all on minecraft.net";
     let right_pad = "  ";
     let title_w = title_text.chars().count();
     let link_w = link_text.chars().count();
@@ -1186,7 +1197,7 @@ fn draw_progress(f: &mut Frame, app: &mut App, area: Rect) {
         (done as f64 / total as f64).clamp(0.0, 1.0)
     };
     // Leave room at the right edge of the bar row for the cancel control.
-    let cancel_label = "✕ Cancel";
+    let cancel_label = "Cancel";
     let cancel_w = cancel_label.chars().count() as u16;
     let can_cancel = app.install_cancel.is_some() && area.width > cancel_w + 16;
     let width = if can_cancel {
@@ -1366,7 +1377,7 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
             f,
             app,
             Rect::new(bx, filter_cols[7].y, bw, filter_cols[7].height),
-            "📦 Browse Modpacks",
+            "Browse Modpacks",
             Hit::OpenModpackBrowser,
             true,
         );
@@ -1375,7 +1386,7 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
             f,
             app,
             filter_cols[7],
-            "📂 Open folder",
+            "Open folder",
             Hit::OpenVersionFolder,
             false,
         );
@@ -1384,7 +1395,7 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
             f,
             app,
             filter_cols[7],
-            "📂 Open folder",
+            "Open folder",
             Hit::OpenVersionFolder,
         );
     }
@@ -1454,21 +1465,20 @@ fn draw_versions(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             theme::base()
         };
-        let marker = if selected { "▶" } else { " " };
-        let prefix = format!(" {marker} ");
-        let check = if installed { "✓ " } else { "  " };
-        let body = format!("{:<18} {:<10} {date} ", id, kind_label);
-        let check_style = if installed {
-            let mut s = row_style;
-            s = s.fg(theme::ACCENT_HI).add_modifier(Modifier::BOLD);
-            s
+        // The selected row is already highlighted, so it needs no caret, and
+        // "installed" says what a tick only hinted at.
+        let body = format!("  {:<18} {:<10} {date}   ", id, kind_label);
+        let installed_style = if installed {
+            row_style.fg(theme::ACCENT_HI).add_modifier(Modifier::BOLD)
         } else {
             row_style
         };
         let line = Line::from(vec![
-            Span::styled(prefix, row_style),
-            Span::styled(check.to_string(), check_style),
             Span::styled(body, row_style),
+            Span::styled(
+                if installed { "installed" } else { "" }.to_string(),
+                installed_style,
+            ),
         ]);
         f.render_widget(Paragraph::new(line).style(row_style), rect);
         app.click_regions.push((rect, Hit::VersionRow(global_idx)));
@@ -1542,10 +1552,9 @@ fn draw_modpack_rows(f: &mut Frame, app: &mut App, content_rect: Rect, sb_rect: 
         } else {
             theme::base()
         };
-        let marker = if selected { "▶" } else { " " };
-        let check = if *installed { "✓ " } else { "  " };
         let name_disp: String = name.chars().take(30).collect();
-        let body = format!(" {marker} {check}{name_disp:<30}  {mc:>9} ");
+        let state = if *installed { "installed" } else { "" };
+        let body = format!("  {name_disp:<30}  {mc:>9}   {state:<9} ");
         f.render_widget(
             Paragraph::new(Span::styled(body, row_style)).style(row_style),
             rect,
@@ -1693,13 +1702,13 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
         );
         y += 1;
 
-        let field_row = Rect::new(inner.x, y, inner.width, BUTTON_H);
+        let field_row = Rect::new(inner.x, y, inner.width, FIELD_H);
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(28), Constraint::Min(0)])
             .split(field_row);
         draw_offline_name(f, app, cols[0]);
-        y += BUTTON_H + 1;
+        y += FIELD_H + 1;
         draw_skin_section(f, app, inner, y, false);
     }
 
@@ -1759,9 +1768,9 @@ fn draw_skin_section(f: &mut Frame, app: &mut App, inner: Rect, mut y: u16, onli
     let label_rect = Rect::new(inner.x, y, 11, BUTTON_H);
     draw_vcentered_label(f, "URL / file:", label_rect, theme::dim());
     let url_w = inner.width.saturating_sub(12).min(54);
-    let url_rect = Rect::new(inner.x + 12, y, url_w, BUTTON_H);
+    let url_rect = Rect::new(inner.x + 12, y, url_w, FIELD_H);
     draw_skin_url(f, app, url_rect);
-    y += BUTTON_H;
+    y += FIELD_H;
     if y + BUTTON_H >= bottom {
         return;
     }
@@ -2266,6 +2275,8 @@ fn draw_logs(f: &mut Frame, app: &mut App, area: Rect) {
 /// A 3-row bordered pill toggle. Selected = gold border + ✓ prefix; hovered =
 /// accent border; idle = neutral border. Used for the Snapshots/Older toggles
 /// on the Versions tab.
+/// An on/off control. The state is a word, not a tick: a checkmark is an
+/// icon standing in for one, and terminals disagree about its width.
 fn draw_toggle_pill(
     f: &mut Frame,
     app: &mut App,
@@ -2290,9 +2301,9 @@ fn draw_toggle_pill(
     let inner = block.inner(rect);
     f.render_widget(block, rect);
     let text = if on {
-        format!("✓ {label}")
+        format!("{label}  on")
     } else {
-        format!("  {label}")
+        format!("{label}  off")
     };
     let mid = inner.height / 2;
     let styled = Span::styled(
@@ -2310,6 +2321,7 @@ fn draw_toggle_pill(
     );
     app.click_regions.push((rect, hit));
 }
+
 
 fn draw_disabled_button(f: &mut Frame, rect: Rect, label: &str) {
     draw_disabled_button_inner(f, rect, label, None);
@@ -2437,7 +2449,7 @@ fn draw_status(f: &mut Frame, app: &mut App, area: Rect) {
     // A modpack install reports progress through this status line, so its
     // cancel control lives here too (visible from any tab).
     if app.modpack_cancel.is_some() {
-        let label = " ✕ Cancel install ";
+        let label = "Cancel install";
         let w = label.chars().count() as u16;
         if area.width > w + 4 {
             let rect = Rect::new(area.x + area.width - w, area.y, w, 1);
@@ -2620,7 +2632,7 @@ fn draw_article(f: &mut Frame, app: &mut App, area: Rect) {
         };
         f.render_widget(
             Paragraph::new(Span::styled(
-                "↗ Read full article on minecraft.net",
+                "Read full article on minecraft.net",
                 style,
             ))
             .style(theme::base()),
@@ -2756,7 +2768,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(theme::GOLD).bg(theme::BG),
         ),
         UpdateStatus::UpToDate(v) => (
-            format!("✓ You're on the latest version (v{v})."),
+            format!("You're on the latest version (v{v})."),
             Style::default().fg(theme::ACCENT_HI).bg(theme::BG),
         ),
         UpdateStatus::Outdated(info) => (
@@ -2774,7 +2786,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
             };
             (
                 format!(
-                    "⬇  Downloading v{}... {:.0}%",
+                    "Downloading v{}... {:.0}%",
                     info.latest, pct
                 ),
                 Style::default().fg(theme::GOLD).bg(theme::BG),
@@ -2782,7 +2794,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
         }
         UpdateStatus::Ready { info, .. } => (
             format!(
-                "✓ v{} downloaded — click \"Install & restart\" in the popup, or hit it here.",
+                "v{} downloaded — click \"Install & restart\" in the popup, or hit it here.",
                 info.latest
             ),
             Style::default().fg(theme::ACCENT_HI).bg(theme::BG),
@@ -2869,8 +2881,8 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
     if y + 2 <= bottom_right {
         y = draw_section_header(f, "Java", right, y);
     }
-    if y + BUTTON_H <= bottom_right {
-        let jp_row = Rect::new(right.x, y, right.width, BUTTON_H);
+    if y + FIELD_H <= bottom_right {
+        let jp_row = Rect::new(right.x, y, right.width, FIELD_H);
         let jp_cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(0), Constraint::Length(1), Constraint::Length(9)])
@@ -2894,10 +2906,10 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
         if !app.java_path_input.is_empty() {
             draw_button(f, app, jp_cols[2], "Clear", Hit::ClearJavaPath, false);
         }
-        y += BUTTON_H + 1;
+        y += FIELD_H + 1;
     }
-    if y + BUTTON_H <= bottom_right {
-        let jpv_row = Rect::new(right.x, y, right.width, BUTTON_H);
+    if y + FIELD_H <= bottom_right {
+        let jpv_row = Rect::new(right.x, y, right.width, FIELD_H);
         let jpv_cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(0), Constraint::Length(1), Constraint::Length(9)])
@@ -2942,7 +2954,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
         if has_pv_override {
             draw_button(f, app, jpv_cols[2], "Clear", Hit::ClearJavaPathForVersion, false);
         }
-        y += BUTTON_H + 1;
+        y += FIELD_H + 1;
     }
 
     if y + 2 <= bottom_right {
@@ -3160,10 +3172,11 @@ fn draw_modpack_browser(f: &mut Frame, app: &mut App, area: Rect) {
     });
     f.render_widget(block, area);
 
+    // The search field sets the row height; the controls beside it centre in it.
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(BUTTON_H),
+            Constraint::Length(FIELD_H),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
@@ -3184,8 +3197,8 @@ fn draw_modpack_browser(f: &mut Frame, app: &mut App, area: Rect) {
         .split(rows[0]);
     draw_mod_search_field(f, app, top[0]);
     let ver_label = match &app.modpack_browse_version {
-        Some(v) => format!("▾ {v}"),
-        None => "▾ Select version".to_string(),
+        Some(v) => format!("{v}"),
+        None => "Select version".to_string(),
     };
     draw_button(
         f,
@@ -3251,7 +3264,7 @@ fn draw_version_picker(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(BUTTON_H),
+            Constraint::Length(FIELD_H),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
@@ -3317,9 +3330,9 @@ fn draw_version_picker(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             theme::base()
         };
-        let marker = if selected { "▶ " } else { "  " };
+        // Selection shows as the row highlight, so the row just needs an indent.
         let r = Rect::new(content.x, y, content.width, 1);
-        f.render_widget(Paragraph::new(format!("{marker}{v}")).style(style), r);
+        f.render_widget(Paragraph::new(format!("  {v}")).style(style), r);
         app.click_regions.push((r, Hit::VersionPickerRow(i)));
     }
 
@@ -3448,7 +3461,7 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(BUTTON_H),
+            Constraint::Length(FIELD_H),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
@@ -3466,7 +3479,7 @@ fn draw_mod_search_pane(f: &mut Frame, app: &mut App, area: Rect) {
         .split(rows[0]);
     draw_mod_search_field(f, app, top_cols[0]);
     let installed_label = if app.installed_filter_only {
-        "✓ Installed"
+        "Installed"
     } else {
         "  All"
     };
@@ -3588,16 +3601,9 @@ fn draw_search_results(f: &mut Frame, app: &mut App, list_area: Rect) {
             .bg(bg)
             .add_modifier(if inert { Modifier::DIM } else { Modifier::BOLD });
         let dim_style = Style::default().fg(dim_fg).bg(bg);
-        let prefix = if installed {
-            "✓ "
-        } else if installing_this {
-            "⏳ "
-        } else {
-            "▸ "
-        };
-        let prefix_color = theme::ACCENT;
+        // State is spelled out at the end of the row, so the start is an indent.
         let l1 = Line::from(vec![
-            Span::styled(prefix, Style::default().fg(prefix_color).bg(bg)),
+            Span::styled("  ", Style::default().bg(bg)),
             Span::styled(hit.title.clone(), title_style),
             Span::styled(format!("  by {}", hit.author), dim_style),
             if installed {
