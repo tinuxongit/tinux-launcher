@@ -51,25 +51,23 @@ pub fn major_can_run(installed: u32, required: u32) -> bool {
     }
 }
 
-/// The best installed JVM for a version: the exact major the version asks for
-/// when it's here, otherwise the closest newer one.
-pub fn detect_for_version(required: u32) -> Option<JavaInstall> {
-    best_for_version(detect_all(), required)
-}
-
-/// Pick the closest usable JVM, which is the lowest one that can run it.
+/// Pick the closest usable JVM out of `installs`, which is the lowest one
+/// that can run the version.
 ///
 /// Newer is not automatically better. Mod loaders rewrite bytecode as they
 /// load it, and Fabric's Mixin refuses class files from a Java it doesn't
 /// know, so a 1.20.1 pack asking for 17 has to get 17 on a machine that also
 /// has 21 and 25 sitting there.
-fn best_for_version(installs: Vec<JavaInstall>, required: u32) -> Option<JavaInstall> {
-    let mut usable: Vec<JavaInstall> = installs
-        .into_iter()
+///
+/// Takes the list rather than scanning, because `detect_all` runs
+/// `java -version` per candidate and the caller needs the same list again to
+/// say what it found.
+pub fn best_for_version(installs: &[JavaInstall], required: u32) -> Option<JavaInstall> {
+    installs
+        .iter()
         .filter(|j| major_can_run(j.major, required))
-        .collect();
-    usable.sort_by_key(|j| j.major);
-    usable.into_iter().next()
+        .min_by_key(|j| j.major)
+        .cloned()
 }
 
 /// Every distinct Java on the machine, best candidate first.
@@ -263,8 +261,8 @@ fn push_children(root: PathBuf, java_subpath: &str, out: &mut Vec<PathBuf>, seen
 }
 
 /// `push_children` two levels down, for layouts that nest a platform folder
-/// between the root and the JDK.
-#[allow(dead_code)]
+/// between the root and the JDK. Only the Linux scan needs it.
+#[cfg(target_os = "linux")]
 fn push_grandchildren(
     root: PathBuf,
     java_subpath: &str,
@@ -334,15 +332,15 @@ mod tests {
     #[test]
     fn picks_the_closest_java_not_the_newest() {
         // A 1.20.1 pack asks for 17: Mixin breaks on 25, so 17 has to win.
-        let chosen = best_for_version(installs(&[25, 21, 17]), 17).unwrap();
+        let chosen = best_for_version(&installs(&[25, 21, 17]), 17).unwrap();
         assert_eq!(chosen.major, 17);
     }
 
     #[test]
     fn falls_forward_when_the_exact_major_is_absent() {
-        let chosen = best_for_version(installs(&[25, 21]), 17).unwrap();
+        let chosen = best_for_version(&installs(&[25, 21]), 17).unwrap();
         assert_eq!(chosen.major, 21);
-        assert!(best_for_version(installs(&[21, 25]), 26).is_none());
+        assert!(best_for_version(&installs(&[21, 25]), 26).is_none());
     }
 
     #[test]

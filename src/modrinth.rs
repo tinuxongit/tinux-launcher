@@ -8,31 +8,23 @@ use tokio::io::AsyncWriteExt;
 const API_BASE: &str = "https://api.modrinth.com/v2";
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct SearchHit {
     pub project_id: String,
-    pub slug: String,
     pub title: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default)]
-    pub downloads: u64,
     #[serde(default)]
     pub author: String,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct SearchResponse {
     pub hits: Vec<SearchHit>,
     #[serde(default)]
     pub total_hits: u32,
-    #[serde(default)]
-    pub offset: u32,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct ProjectVersion {
     #[serde(default)]
     version_number: String,
@@ -372,7 +364,6 @@ async fn install_one(
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ModpackFile {
     pub url: String,
     pub filename: String,

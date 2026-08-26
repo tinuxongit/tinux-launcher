@@ -81,7 +81,8 @@ cd tinux-launcher
 cargo run --release
 ```
 
-Requires Rust 1.80+ and a JDK on `PATH` (Java 17+ for 1.17+, Java 8 for older).
+Requires Rust 1.82+ and a JDK on `PATH` (Java 17+ for 1.17+, Java 8 for older).
+The launcher will offer to download the right Java if you haven't got it.
 
 ## Keys
 

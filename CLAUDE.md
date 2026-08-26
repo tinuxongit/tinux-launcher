@@ -32,9 +32,12 @@ from GitHub Releases.
 ## CI and tests
 
 `.github/workflows/ci.yml` runs `cargo test` on Ubuntu and Windows for every
-push and PR. The clippy job is informational only because the codebase has
-pre-existing warnings; don't gate on clippy or rustfmt until those are cleaned
-up repo-wide.
+push and PR. The clippy job is informational. It was informational because the
+codebase carried 26 warnings; that backlog is cleared and four remain, all of
+them `too_many_arguments` at 8 against a limit of 7 on drawing and search
+helpers. Gating on clippy means either fixing those four or allowing that one
+lint. `cargo build` alone will not show you everything: some warnings only
+appear under `--all-targets`, because test code counts as a use.
 
 `cargo test` runs only the fast unit tests. The `#[ignore]`d end-to-end tests
 in `src/forge.rs` download and run the real Forge/NeoForge installers

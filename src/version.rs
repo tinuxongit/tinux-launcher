@@ -193,7 +193,7 @@ fn rule_matches(r: &Rule) -> bool {
         }
     }
     if let Some(features) = &r.features {
-        for (_, want) in features {
+        for want in features.values() {
             if *want {
                 return false;
             }

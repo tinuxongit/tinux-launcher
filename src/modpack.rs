@@ -20,14 +20,9 @@ use tokio::io::AsyncWriteExt;
 const CONCURRENT_DOWNLOADS: usize = 8;
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct ModpackIndex {
-    #[serde(default, rename = "formatVersion")]
-    pub format_version: u32,
     #[serde(default)]
     pub name: String,
-    #[serde(default, rename = "versionId")]
-    pub version_id: String,
     #[serde(default)]
     pub dependencies: HashMap<String, String>,
     #[serde(default)]
@@ -52,12 +47,9 @@ pub struct FileHashes {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct FileEnv {
     #[serde(default)]
     pub client: Option<String>,
-    #[serde(default)]
-    pub server: Option<String>,
 }
 
 /// Which loader runtime a modpack targets.
@@ -295,9 +287,7 @@ mod tests {
 
     fn index_with(dependencies: &[(&str, &str)]) -> ModpackIndex {
         ModpackIndex {
-            format_version: 1,
             name: String::new(),
-            version_id: String::new(),
             dependencies: dependencies
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))

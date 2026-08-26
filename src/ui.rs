@@ -318,7 +318,7 @@ fn draw_grouped_chips(
     let mut total_h: u16 = 0;
     for (_, members) in &groups {
         total_h += group_header_h;
-        let rows = ((members.len() as u16) + col_count - 1) / col_count;
+        let rows = (members.len() as u16).div_ceil(col_count);
         total_h += rows * (chip_h + row_gap);
         total_h += 1; // group bottom spacer
     }
@@ -395,7 +395,7 @@ fn draw_grouped_chips(
             let selected = app.selected_categories.iter().any(|s| s == &cat.name);
             draw_chip_button(f, app, chip_rect, &pretty_category(&cat.name), selected, Hit::CategoryChip(*idx));
         }
-        let rows = ((members.len() as u16) + col_count - 1) / col_count;
+        let rows = (members.len() as u16).div_ceil(col_count);
         vy += rows * (chip_h + row_gap);
         vy += 1;
     }
@@ -482,7 +482,7 @@ fn draw_info_popup(f: &mut Frame, app: &mut App, area: Rect) {
             if chars == 0 {
                 1
             } else {
-                ((chars + text_w - 1) / text_w).max(1) as u16
+                chars.div_ceil(text_w).max(1) as u16
             }
         })
         .sum();
@@ -1195,9 +1195,8 @@ fn draw_progress(f: &mut Frame, app: &mut App, area: Rect) {
         area.width.saturating_sub(2)
     } as usize;
     let filled = (pct * width as f64).round() as usize;
-    let bar: String = std::iter::repeat('█')
-        .take(filled)
-        .chain(std::iter::repeat('░').take(width.saturating_sub(filled)))
+    let bar: String = std::iter::repeat_n('█', filled)
+        .chain(std::iter::repeat_n('░', width.saturating_sub(filled)))
         .collect();
     let line1 = Line::from(vec![
         Span::styled(bar, Style::default().fg(theme::ACCENT)),
@@ -2021,9 +2020,9 @@ fn draw_skin_preview_box(f: &mut Frame, app: &mut App, area: Rect) {
 /// the cape pixels to draw on the player, the label for the selector row,
 /// whether the local choice differs from the server's, and whether the
 /// arrows should be interactive (false when the user owns no capes).
-fn resolve_cape_view<'a>(
-    app: &'a App,
-) -> (Option<&'a crate::skin::CapePixels>, String, bool, bool) {
+fn resolve_cape_view(
+    app: &App,
+) -> (Option<&crate::skin::CapePixels>, String, bool, bool) {
     let Some(acc) = app.account.as_ref() else {
         return (None, "None".to_string(), false, false);
     };
@@ -2703,7 +2702,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
 
     y = draw_section_header(f, "Updates", left, y);
 
-    if y + 1 <= bottom_left {
+    if y < bottom_left {
         let current_line = format!("Current: v{}", env!("CARGO_PKG_VERSION"));
         f.render_widget(
             Paragraph::new(Line::from(vec![
@@ -2794,7 +2793,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
         ),
     };
     // Compact update status (one line, no wrap).
-    if y + 1 <= bottom_left {
+    if y < bottom_left {
         let max_len = left.width as usize;
         let mut s = status_line;
         if s.chars().count() > max_len {
@@ -2811,7 +2810,7 @@ fn draw_settings(f: &mut Frame, app: &mut App, area: Rect) {
     if y + 2 <= bottom_left {
         y = draw_section_header(f, "Game", left, y);
     }
-    if y + 1 <= bottom_left {
+    if y < bottom_left {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("Max RAM: ", theme::dim()),
@@ -3883,9 +3882,8 @@ fn draw_update_modal(f: &mut Frame, app: &mut App, area: Rect) {
         };
         let width = inner.width.saturating_sub(8) as usize;
         let filled = (pct * width as f64).round() as usize;
-        let bar: String = std::iter::repeat('█')
-            .take(filled)
-            .chain(std::iter::repeat('░').take(width.saturating_sub(filled)))
+        let bar: String = std::iter::repeat_n('█', filled)
+            .chain(std::iter::repeat_n('░', width.saturating_sub(filled)))
             .collect();
         f.render_widget(
             Paragraph::new(Line::from(vec![

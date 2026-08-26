@@ -205,12 +205,12 @@ async fn build_plan(
 
     // assets
     let mut resource_assets = Vec::new();
-    for (_name, obj) in &asset_index.objects {
+    for obj in asset_index.objects.values() {
         let dest = paths.asset_object(&obj.hash);
         let url = format!(
             "https://resources.download.minecraft.net/{}/{}",
             &obj.hash[..2],
-            &obj.hash
+            obj.hash
         );
         jobs.push(DownloadJob {
             url,

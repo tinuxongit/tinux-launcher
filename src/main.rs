@@ -41,6 +41,9 @@ use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
 use std::io::{self, Stdout};
 use tokio::sync::mpsc::unbounded_channel;
 
+/// The terminal the whole UI draws onto.
+type Tui = Terminal<CrosstermBackend<Stdout>>;
+
 #[cfg(windows)]
 const TERMINAL_COLS: u16 = 120;
 #[cfg(windows)]
@@ -126,7 +129,7 @@ fn handle_cli_info_args() -> bool {
     }
 }
 
-fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, Option<(u16, u16)>)> {
+fn setup_terminal() -> Result<(Tui, Option<(u16, u16)>)> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, SetTitle(APP_TITLE), EnterAlternateScreen, EnableMouseCapture)?;
@@ -145,7 +148,7 @@ fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, Option<(u16, 
 }
 
 fn restore_terminal(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut Tui,
     original_size: Option<(u16, u16)>,
 ) -> Result<()> {
     disable_raw_mode()?;
@@ -182,7 +185,7 @@ fn enforce_terminal_size(stdout: &mut Stdout) {
 fn enforce_terminal_size(_stdout: &mut Stdout) {}
 
 #[cfg(windows)]
-fn enforce_terminal_backend_size(terminal: &mut Terminal<CrosstermBackend<Stdout>>) {
+fn enforce_terminal_backend_size(terminal: &mut Tui) {
     if crossterm::terminal::size().ok() != Some((TERMINAL_COLS, TERMINAL_ROWS)) {
         let _ = execute!(
             terminal.backend_mut(),
@@ -192,10 +195,10 @@ fn enforce_terminal_backend_size(terminal: &mut Terminal<CrosstermBackend<Stdout
 }
 
 #[cfg(not(windows))]
-fn enforce_terminal_backend_size(_terminal: &mut Terminal<CrosstermBackend<Stdout>>) {}
+fn enforce_terminal_backend_size(_terminal: &mut Tui) {}
 
 async fn run_loop(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    terminal: &mut Tui,
     app: &mut App,
     worker_rx: &mut tokio::sync::mpsc::UnboundedReceiver<event::WorkerMsg>,
 ) -> Result<()> {
@@ -294,11 +297,11 @@ fn handle_key(app: &mut App, k: KeyEvent) {
                     changed = true;
                 }
             }
-            KeyCode::Char(c) if !c.is_control() => {
-                if app.offline_name.chars().count() < 16 {
-                    app.offline_name.push(c);
-                    changed = true;
-                }
+            KeyCode::Char(c)
+                if !c.is_control() && app.offline_name.chars().count() < 16 =>
+            {
+                app.offline_name.push(c);
+                changed = true;
             }
             _ => {}
         }
@@ -314,10 +317,10 @@ fn handle_key(app: &mut App, k: KeyEvent) {
             KeyCode::Backspace => {
                 app.skin_url_input.pop();
             }
-            KeyCode::Char(c) if !c.is_control() => {
-                if app.skin_url_input.chars().count() < 250 {
-                    app.skin_url_input.push(c);
-                }
+            KeyCode::Char(c)
+                if !c.is_control() && app.skin_url_input.chars().count() < 250 =>
+            {
+                app.skin_url_input.push(c);
             }
             _ => {}
         }
@@ -334,10 +337,10 @@ fn handle_key(app: &mut App, k: KeyEvent) {
             KeyCode::Backspace => {
                 app.mod_search_query.pop();
             }
-            KeyCode::Char(c) if !c.is_control() => {
-                if app.mod_search_query.chars().count() < 80 {
-                    app.mod_search_query.push(c);
-                }
+            KeyCode::Char(c)
+                if !c.is_control() && app.mod_search_query.chars().count() < 80 =>
+            {
+                app.mod_search_query.push(c);
             }
             _ => {}
         }
@@ -363,11 +366,11 @@ fn handle_key(app: &mut App, k: KeyEvent) {
                 app.version_picker_query.pop();
                 app.version_picker_offset = 0;
             }
-            KeyCode::Char(c) if !c.is_control() => {
-                if app.version_picker_query.chars().count() < 32 {
-                    app.version_picker_query.push(c);
-                    app.version_picker_offset = 0;
-                }
+            KeyCode::Char(c)
+                if !c.is_control() && app.version_picker_query.chars().count() < 32 =>
+            {
+                app.version_picker_query.push(c);
+                app.version_picker_offset = 0;
             }
             _ => {}
         }
@@ -383,10 +386,10 @@ fn handle_key(app: &mut App, k: KeyEvent) {
             KeyCode::Backspace => {
                 app.java_path_input.pop();
             }
-            KeyCode::Char(c) if !c.is_control() => {
-                if app.java_path_input.chars().count() < 260 {
-                    app.java_path_input.push(c);
-                }
+            KeyCode::Char(c)
+                if !c.is_control() && app.java_path_input.chars().count() < 260 =>
+            {
+                app.java_path_input.push(c);
             }
             _ => {}
         }
@@ -410,10 +413,10 @@ fn handle_key(app: &mut App, k: KeyEvent) {
             KeyCode::Backspace => {
                 app.java_path_for_version_input.pop();
             }
-            KeyCode::Char(c) if !c.is_control() => {
-                if app.java_path_for_version_input.chars().count() < 260 {
-                    app.java_path_for_version_input.push(c);
-                }
+            KeyCode::Char(c)
+                if !c.is_control() && app.java_path_for_version_input.chars().count() < 260 =>
+            {
+                app.java_path_for_version_input.push(c);
             }
             _ => {}
         }
@@ -1986,7 +1989,7 @@ fn trigger_import_profile(app: &mut App) {
         return;
     };
     let mut queued = 0usize;
-    for (project_id, _filename) in parsed.map(app.browser_kind).iter() {
+    for project_id in parsed.map(app.browser_kind).keys() {
         if app.installed_meta.is_installed(app.browser_kind, project_id) {
             continue;
         }

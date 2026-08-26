@@ -136,6 +136,10 @@ pub async fn do_install_and_launch(
     };
 
     let required_java = required_java_major(&details);
+    // One scan, reused: detect_all runs `java -version` per candidate, which
+    // is around a second on a machine with several JDKs, and the failure
+    // message needs the same list the choice was made from.
+    let installed = java::detect_all();
     // User-configured override wins over auto-detection. We trust the user
     // picked something sensible (detect_at_path probes it to read the major).
     let launch_java = if let Some(p) = opts.java_override.as_ref() {
@@ -149,7 +153,7 @@ pub async fn do_install_and_launch(
                 return;
             }
         }
-    } else if let Some(found) = java::detect_for_version(required_java) {
+    } else if let Some(found) = java::best_for_version(&installed, required_java) {
         // The closest match, not merely the first that qualifies: the default
         // Java may be far newer than the version wants, and mod loaders break
         // on that.
@@ -157,8 +161,8 @@ pub async fn do_install_and_launch(
     } else if java::major_can_run(java.major, required_java) {
         java
     } else {
-        let found = java::detect_all()
-            .into_iter()
+        let found = installed
+            .iter()
             .map(|j| format!("Java {} at {}", j.major, j.path.display()))
             .collect::<Vec<_>>()
             .join(", ");
