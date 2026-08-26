@@ -3608,11 +3608,7 @@ fn draw_search_results(f: &mut Frame, app: &mut App, list_area: Rect) {
                 Span::raw("")
             },
         ]);
-        let desc = if hit.description.len() > 100 {
-            format!("{}...", &hit.description[..97])
-        } else {
-            hit.description.clone()
-        };
+        let desc = ellipsize(&hit.description, 100);
         let l2 = Line::from(vec![
             Span::styled("    ", Style::default().bg(bg)),
             Span::styled(desc, Style::default().fg(body_fg).bg(bg)),
@@ -3950,6 +3946,23 @@ fn draw_update_modal(f: &mut Frame, app: &mut App, area: Rect) {
     draw_button(f, app, cols[3], "Later", Hit::DismissUpdate, false);
 }
 
+/// Shorten `s` to `max` characters, ending in an ellipsis when it was cut.
+///
+/// Counts characters, not bytes. Everything shortened here was written by
+/// somebody else (a mod description, an author name), and slicing one of
+/// those at a byte offset panics the moment the offset lands inside a
+/// multi-byte character. An emoji in a Modrinth description is enough, and
+/// this crate aborts on panic, so the launcher would vanish mid-search.
+fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let keep = max.saturating_sub(3);
+    let mut out: String = s.chars().take(keep).collect();
+    out.push_str("...");
+    out
+}
+
 fn human_bytes(n: u64) -> String {
     const KIB: u64 = 1024;
     const MIB: u64 = 1024 * KIB;
@@ -3980,4 +3993,31 @@ pub fn hit_region(app: &App, col: u16, row: u16) -> Option<(Rect, Hit)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ellipsize;
+
+    #[test]
+    fn short_strings_pass_through() {
+        assert_eq!(ellipsize("hello", 100), "hello");
+    }
+
+    #[test]
+    fn cuts_on_character_boundaries() {
+        // Byte 97 lands inside this emoji, which is what used to abort the
+        // whole launcher while drawing a Modrinth search result.
+        let d = format!("{}🔥 and more text to push this well past the limit", "a".repeat(95));
+        let out = ellipsize(&d, 100);
+        assert_eq!(out.chars().count(), 100);
+        assert!(out.ends_with("..."));
+    }
+
+    #[test]
+    fn counts_characters_not_bytes() {
+        // 50 CJK characters is 150 bytes but well under a 100 character cap.
+        let s = "字".repeat(50);
+        assert_eq!(ellipsize(&s, 100), s);
+    }
 }
