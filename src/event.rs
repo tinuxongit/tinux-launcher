@@ -98,6 +98,8 @@ pub enum Hit {
     VersionPickerField,
     VersionPickerRow(usize),
     VersionPickerScrollbar,
+    DownloadJavaButton,
+    DismissJavaPrompt,
     CancelInstallButton,
     CancelModpackInstall,
     ConfirmRemoveModpack,
@@ -158,6 +160,26 @@ pub enum WorkerMsg {
     LaunchLog(String),
     LaunchExited(i32),
     LaunchFailed(String),
+    /// The version needs a Java this machine hasn't got. Carries what it takes
+    /// to offer the download, rather than only saying no.
+    JavaMissing {
+        major: u32,
+        component: Option<String>,
+        detail: String,
+    },
+    JavaDownloadStarted {
+        major: u32,
+        version: String,
+    },
+    JavaDownloadProgress {
+        done: u64,
+        total: u64,
+    },
+    JavaDownloadDone {
+        version: String,
+        path: std::path::PathBuf,
+    },
+    JavaDownloadFailed(String),
     NewsLoaded(Vec<NewsEntry>),
     NewsFailed(String),
     ArticleLoaded { index: usize, article: Article },

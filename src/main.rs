@@ -14,6 +14,7 @@ mod modpack;
 mod modrinth;
 mod news;
 mod paths;
+mod runtime;
 mod skin;
 mod theme;
 mod ui;
@@ -485,6 +486,17 @@ fn handle_key(app: &mut App, k: KeyEvent) {
             Tab::Logs => app.log_offset = app.log_offset.saturating_sub(10),
             _ => {}
         },
+        // With a missing-Java offer up, Launch would only fail the same way
+        // again, so Enter takes the offer instead. Dismiss clears it.
+        KeyCode::Enter
+            if app.tab == Tab::Play
+                && matches!(
+                    app.java_prompt,
+                    Some(app::JavaPrompt::Offer { .. }) | Some(app::JavaPrompt::Failed { .. })
+                ) =>
+        {
+            trigger_download_java(app)
+        }
         KeyCode::Enter if app.tab == Tab::Play => trigger_launch(app),
         _ => {}
     }
@@ -906,6 +918,16 @@ fn dispatch(app: &mut App, hit: Hit, extend: bool) {
         Hit::OpenDataFolder => {
             open_path(&app.paths.root);
             app.status_message = format!("Opened {}", app.paths.root.display());
+        }
+        Hit::DownloadJavaButton => {
+            trigger_download_java(app);
+        }
+        Hit::DismissJavaPrompt => {
+            if let Some(flag) = app.java_cancel.take() {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            app.java_prompt = None;
+            app.needs_clear = true;
         }
         Hit::InstallUpdateNow => {
             trigger_install_update(app);
@@ -1347,6 +1369,41 @@ fn trigger_launch(app: &mut App) {
     app.install_cancel = Some(cancel.clone());
     tokio::spawn(async move {
         worker::do_install_and_launch(client, paths_clone, entry, java, opts, cancel, tx).await;
+    });
+}
+
+/// Fetch the Java the selected version asked for, from Mojang.
+fn trigger_download_java(app: &mut App) {
+    let (major, component) = match &app.java_prompt {
+        Some(app::JavaPrompt::Offer { major, component })
+        | Some(app::JavaPrompt::Failed {
+            major, component, ..
+        }) => (*major, component.clone()),
+        _ => return,
+    };
+    if runtime::platform_key().is_none() {
+        app.report_failure(format!(
+            "Mojang publishes no Java {major} for {} on {}. Install a JDK yourself.",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ));
+        return;
+    }
+    let cancel = download::new_cancel_flag();
+    app.java_cancel = Some(cancel.clone());
+    app.java_prompt = Some(app::JavaPrompt::Downloading {
+        major,
+        version: major.to_string(),
+        done: 0,
+        total: 0,
+    });
+    app.status_message = format!("Fetching Java {major} from Mojang...");
+
+    let client = app.client.clone();
+    let paths_clone = clone_paths(&app.paths);
+    let tx = app.worker_tx.clone();
+    tokio::spawn(async move {
+        worker::do_download_java(client, paths_clone, major, component, cancel, tx).await;
     });
 }
 
@@ -2001,6 +2058,7 @@ fn clone_paths(p: &paths::Paths) -> paths::Paths {
         assets_objects: p.assets_objects.clone(),
         natives: p.natives.clone(),
         instances: p.instances.clone(),
+        runtimes: p.runtimes.clone(),
         vanilla_minecraft: p.vanilla_minecraft.clone(),
         logs: p.logs.clone(),
         cache: p.cache.clone(),

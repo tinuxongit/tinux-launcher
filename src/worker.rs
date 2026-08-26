@@ -149,10 +149,13 @@ pub async fn do_install_and_launch(
                 return;
             }
         }
+    } else if let Some(found) = java::detect_for_version(required_java) {
+        // The closest match, not merely the first that qualifies: the default
+        // Java may be far newer than the version wants, and mod loaders break
+        // on that.
+        found
     } else if java::major_can_run(java.major, required_java) {
         java
-    } else if let Some(found) = java::detect_for_version(required_java) {
-        found
     } else {
         let found = java::detect_all()
             .into_iter()
@@ -171,9 +174,11 @@ pub async fn do_install_and_launch(
         } else {
             format!("Java {required_java} or newer")
         };
-        let _ = tx.send(WorkerMsg::LaunchFailed(format!(
-            "Minecraft {version_id} needs {wanted}. Found {found}. Install it, or set the Java path for this version in Settings."
-        )));
+        let _ = tx.send(WorkerMsg::JavaMissing {
+            major: required_java,
+            component: required_java_component(&details),
+            detail: format!("Minecraft {version_id} needs {wanted}. Found {found}."),
+        });
         return;
     };
 
@@ -681,10 +686,73 @@ pub async fn do_verify_integrity(
     }
 }
 
+/// Mojang's name for the runtime this version wants, e.g.
+/// `java-runtime-epsilon`. Older version JSONs leave it empty.
+fn required_java_component(details: &VersionDetails) -> Option<String> {
+    details
+        .java_version
+        .as_ref()
+        .map(|req| req.component.clone())
+        .filter(|c| !c.is_empty())
+}
+
 fn required_java_major(details: &VersionDetails) -> u32 {
     details
         .java_version
         .as_ref()
         .map(|req| req.major_version)
         .unwrap_or(8)
+}
+
+/// Fetch the Java a version asked for from Mojang and report where it landed.
+///
+/// Runs on the same download machinery as everything else, so it hashes every
+/// file, reports progress and can be cancelled.
+pub async fn do_download_java(
+    client: reqwest::Client,
+    paths: Paths,
+    major: u32,
+    component: Option<String>,
+    cancel: CancelFlag,
+    tx: UnboundedSender<WorkerMsg>,
+) {
+    let choice = match crate::runtime::find(&client, major, component.as_deref()).await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::JavaDownloadFailed(format!("{e:#}")));
+            return;
+        }
+    };
+    let _ = tx.send(WorkerMsg::JavaDownloadStarted {
+        major,
+        version: choice.version.clone(),
+    });
+
+    let (prog_tx, mut prog_rx) = mpsc::unbounded_channel::<ProgressEvent>();
+    let app_tx = tx.clone();
+    let forwarder = tokio::spawn(async move {
+        while let Some(ev) = prog_rx.recv().await {
+            let _ = app_tx.send(WorkerMsg::JavaDownloadProgress {
+                done: ev.done,
+                total: ev.total,
+            });
+        }
+    });
+
+    let result =
+        crate::runtime::install(&client, &paths.runtimes, &choice, &prog_tx, &cancel).await;
+    drop(prog_tx);
+    let _ = forwarder.await;
+
+    match result {
+        Ok(path) => {
+            let _ = tx.send(WorkerMsg::JavaDownloadDone {
+                version: choice.version,
+                path,
+            });
+        }
+        Err(e) => {
+            let _ = tx.send(WorkerMsg::JavaDownloadFailed(format!("{e:#}")));
+        }
+    }
 }

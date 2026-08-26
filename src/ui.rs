@@ -1,5 +1,5 @@
 use crate::app::{
-    AccountMode, App, ContentKind, Focus, LaunchState, ModLoader, SkinModel,
+    AccountMode, App, ContentKind, Focus, JavaPrompt, LaunchState, ModLoader, SkinModel,
     UpdateStatus, VersionFilter,
 };
 use crate::modrinth::SearchHit;
@@ -751,8 +751,11 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     let installing = app.install.is_some();
     let progress_h = if installing { 2 } else { 0 };
     let progress_gap = if installing { 1 } else { 0 };
+    // The missing-Java offer takes a line of explanation and a button row.
+    let java_h = if app.java_prompt.is_some() { 1 + BUTTON_H } else { 0 };
+    let java_gap = if app.java_prompt.is_some() { 1 } else { 0 };
     // Default top: selected(1) + playing(1) + gap(1) + button(3) + gap(1) + progress + progress_gap
-    let default_top = 7u16 + progress_h + progress_gap;
+    let default_top = 7u16 + progress_h + progress_gap + java_h + java_gap;
     let max_top = inner.height.saturating_sub(4);
     let top_h = app.news_split_top.unwrap_or(default_top).clamp(7, max_top.max(7));
 
@@ -774,6 +777,8 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(BUTTON_H),     // 3 button
             Constraint::Length(progress_gap), // 4 (gap only if installing)
             Constraint::Length(progress_h),   // 5 progress (0 if not installing)
+            Constraint::Length(java_gap),     // 6 (gap only with a Java offer)
+            Constraint::Length(java_h),       // 7 Java offer (0 if none)
             Constraint::Min(0),               // padding
         ])
         .split(outer_rows[0]);
@@ -867,8 +872,112 @@ fn draw_play(f: &mut Frame, app: &mut App, area: Rect) {
     if installing {
         draw_progress(f, app, rows[5]);
     }
+    if app.java_prompt.is_some() {
+        draw_java_prompt(f, app, rows[7]);
+    }
     draw_news_header(f, app, outer_rows[1]);
     draw_news_list(f, app, outer_rows[2]);
+}
+
+/// The missing-Java offer under the Launch button.
+///
+/// A version naming a Java nobody has is a dead end the launcher can fix
+/// itself: Mojang publishes the runtime, so the answer is a button rather
+/// than a sentence telling the player to go and install a JDK.
+fn draw_java_prompt(f: &mut Frame, app: &mut App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(BUTTON_H)])
+        .split(area);
+
+    let downloadable = crate::runtime::platform_key().is_some();
+    let prompt = app.java_prompt.clone();
+    let line = match &prompt {
+        Some(JavaPrompt::Offer { major, .. }) if downloadable => Line::from(vec![
+            Span::styled("Java ", theme::dim()),
+            Span::styled(major.to_string(), Style::default().fg(theme::FG)),
+            Span::styled(
+                " is missing. Mojang publishes it — get it now?",
+                theme::dim(),
+            ),
+        ]),
+        Some(JavaPrompt::Offer { major, .. }) => Line::from(Span::styled(
+            format!(
+                "Java {major} is missing, and Mojang publishes no runtime for {}. Install a JDK yourself.",
+                std::env::consts::ARCH
+            ),
+            theme::dim(),
+        )),
+        Some(JavaPrompt::Downloading {
+            version,
+            done,
+            total,
+            ..
+        }) => {
+            let pct = if *total > 0 {
+                format!(" {}%", done * 100 / total)
+            } else {
+                String::new()
+            };
+            Line::from(Span::styled(
+                format!(
+                    "Downloading Java {version} from Mojang{pct}  ({} of {})",
+                    human_bytes(*done),
+                    human_bytes(*total)
+                ),
+                theme::dim(),
+            ))
+        }
+        Some(JavaPrompt::Installed { version }) => Line::from(vec![
+            Span::styled("Java ", theme::dim()),
+            Span::styled(version.clone(), Style::default().fg(theme::FG)),
+            Span::styled(" installed. Press Launch.", theme::dim()),
+        ]),
+        Some(JavaPrompt::Failed { error, .. }) => Line::from(Span::styled(
+            format!("Java download failed: {error}"),
+            Style::default().fg(theme::RED),
+        )),
+        None => return,
+    };
+    f.render_widget(Paragraph::new(line).style(theme::base()), rows[0]);
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(26),
+            Constraint::Length(3),
+            Constraint::Length(14),
+            Constraint::Min(0),
+        ])
+        .split(rows[1]);
+
+    match &prompt {
+        Some(JavaPrompt::Offer { major, .. }) if downloadable => {
+            draw_button(
+                f,
+                app,
+                cols[0],
+                &format!("⬇  Download Java {major}"),
+                Hit::DownloadJavaButton,
+                true,
+            );
+        }
+        Some(JavaPrompt::Failed { major, .. }) if downloadable => {
+            draw_button(
+                f,
+                app,
+                cols[0],
+                &format!("⬇  Retry Java {major}"),
+                Hit::DownloadJavaButton,
+                true,
+            );
+        }
+        Some(JavaPrompt::Downloading { .. }) => {
+            draw_disabled_button(f, cols[0], "Downloading...");
+        }
+        _ => {}
+    }
+    draw_button(f, app, cols[2], "Dismiss", Hit::DismissJavaPrompt, false);
 }
 
 fn draw_news_header(f: &mut Frame, app: &mut App, area: Rect) {

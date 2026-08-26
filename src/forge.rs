@@ -562,6 +562,7 @@ mod tests {
             assets,
             natives: root.join("natives"),
             instances: root.join("instances"),
+            runtimes: root.join("runtimes"),
             vanilla_minecraft: root.join(".minecraft"),
             logs: root.join("logs"),
             cache: root.join("cache"),

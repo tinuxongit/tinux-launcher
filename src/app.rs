@@ -185,6 +185,31 @@ pub enum UpdateStatus {
     Failed(String),
 }
 
+/// The offer to fetch a missing Java, shown on the Play tab in place of a
+/// dead-end error. `major` and `component` are what the download needs; the
+/// sentence explaining why already went to the status bar and the log.
+#[derive(Debug, Clone)]
+pub enum JavaPrompt {
+    Offer {
+        major: u32,
+        component: Option<String>,
+    },
+    Downloading {
+        major: u32,
+        version: String,
+        done: u64,
+        total: u64,
+    },
+    Installed {
+        version: String,
+    },
+    Failed {
+        major: u32,
+        component: Option<String>,
+        error: String,
+    },
+}
+
 #[derive(Debug)]
 pub struct InstallState {
     pub kind: InstallKind,
@@ -273,6 +298,9 @@ pub struct App {
     /// the worker bail out; cleared when the worker reports done/failed.
     pub install_cancel: Option<crate::download::CancelFlag>,
     pub launch_state: LaunchState,
+    /// Set when a launch stopped because the right Java isn't installed.
+    pub java_prompt: Option<JavaPrompt>,
+    pub java_cancel: Option<crate::download::CancelFlag>,
 
     pub news: Vec<NewsEntry>,
     pub news_offset: usize,
@@ -496,6 +524,8 @@ impl App {
             install: None,
             install_cancel: None,
             launch_state: LaunchState::Idle,
+            java_prompt: None,
+            java_cancel: None,
             news: Vec::new(),
             news_offset: 0,
             viewing_news: None,
@@ -1030,6 +1060,8 @@ impl App {
             WorkerMsg::LaunchStarted(v) => {
                 self.launch_state = LaunchState::Running;
                 self.install_cancel = None;
+                // The launch got past the Java check, so the offer is spent.
+                self.java_prompt = None;
                 self.status_message = format!("Launched {v}");
                 self.needs_clear = true;
             }
@@ -1046,6 +1078,61 @@ impl App {
                 self.launch_state = LaunchState::Idle;
                 self.install_cancel = None;
                 self.report_failure(format!("Launch failed: {e}"));
+                self.needs_clear = true;
+            }
+            WorkerMsg::JavaMissing {
+                major,
+                component,
+                detail,
+            } => {
+                self.launch_state = LaunchState::Idle;
+                self.install_cancel = None;
+                self.report_failure(format!("Launch failed: {detail}"));
+                self.java_prompt = Some(JavaPrompt::Offer { major, component });
+                self.needs_clear = true;
+            }
+            WorkerMsg::JavaDownloadStarted { major, version } => {
+                self.push_log(format!("Downloading Java {version} from Mojang"));
+                self.java_prompt = Some(JavaPrompt::Downloading {
+                    major,
+                    version,
+                    done: 0,
+                    total: 0,
+                });
+            }
+            WorkerMsg::JavaDownloadProgress { done, total } => {
+                if let Some(JavaPrompt::Downloading { major, version, .. }) = &self.java_prompt {
+                    self.java_prompt = Some(JavaPrompt::Downloading {
+                        major: *major,
+                        version: version.clone(),
+                        done,
+                        total,
+                    });
+                }
+            }
+            WorkerMsg::JavaDownloadDone { version, path } => {
+                self.java_cancel = None;
+                self.push_log(format!("Java {version} installed at {}", path.display()));
+                self.status_message = format!("Java {version} installed — press Launch");
+                self.java_prompt = Some(JavaPrompt::Installed { version });
+                self.needs_clear = true;
+            }
+            WorkerMsg::JavaDownloadFailed(e) => {
+                self.java_cancel = None;
+                let (major, component) = match &self.java_prompt {
+                    Some(JavaPrompt::Offer { major, component })
+                    | Some(JavaPrompt::Failed {
+                        major, component, ..
+                    }) => (*major, component.clone()),
+                    Some(JavaPrompt::Downloading { major, .. }) => (*major, None),
+                    _ => (0, None),
+                };
+                self.report_failure(format!("Java download failed: {e}"));
+                self.java_prompt = Some(JavaPrompt::Failed {
+                    major,
+                    component,
+                    error: e,
+                });
                 self.needs_clear = true;
             }
             WorkerMsg::NewsLoaded(entries) => {
